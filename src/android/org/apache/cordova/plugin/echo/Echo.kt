@@ -366,13 +366,22 @@ class Echo : CordovaPlugin() {
                     when (result) {
                         is com.clerk.api.network.serialization.ClerkResult.Success -> {
                             val signInData = result.value
+                            val sessionId = signInData.createdSessionId
+                            if (!sessionId.isNullOrEmpty()) {
+                                try {
+                                    Clerk.auth.setActive(sessionId = sessionId)
+                                    Log.d(TAG, "Successfully activated session: $sessionId")
+                                } catch (t: Throwable) {
+                                    Log.w(TAG, "Could not set active session: ${t.message}")
+                                }
+                            }
                             Log.d(TAG, "signInWithPassword SUCCESS: signInId=${signInData.id}, status=${signInData.status.name}")
                             response.put("status", "success")
                             response.put("message", "Sign in successful")
                             response.put("identifier", id)
                             response.put("signInId", signInData.id)
                             response.put("signInStatus", signInData.status.name)
-                            response.put("createdSessionId", signInData.createdSessionId)
+                            response.put("createdSessionId", sessionId ?: "")
                             callbackContext.success(response)
                         }
                         is com.clerk.api.network.serialization.ClerkResult.Failure -> {
