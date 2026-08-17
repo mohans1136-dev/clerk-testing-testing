@@ -2,15 +2,15 @@ package org.apache.cordova.plugin.echo
 
 import org.apache.cordova.CordovaPlugin
 import org.apache.cordova.CallbackContext
-import org.apache.cordova.PluginResult
 import org.json.JSONArray
-import org.json.JSONException
 import org.json.JSONObject
 import android.util.Log
 import com.clerk.api.Clerk
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * Echo Cordova Plugin implemented in Kotlin with Clerk Android SDK Integration.
@@ -19,6 +19,7 @@ class Echo : CordovaPlugin() {
 
     companion object {
         private const val TAG = "EchoPlugin"
+        private const val NETWORK_TIMEOUT_MS = 15000L
     }
 
     override fun execute(
@@ -66,6 +67,11 @@ class Echo : CordovaPlugin() {
             }
             "getCurrentUser" -> {
                 this.getCurrentUser(callbackContext)
+                true
+            }
+            "testConnection" -> {
+                val publishableKey = args.optString(0, "")
+                this.testConnection(publishableKey, callbackContext)
                 true
             }
             else -> false
@@ -117,43 +123,38 @@ class Echo : CordovaPlugin() {
         cordova.threadPool.execute {
             val response = JSONObject()
             try {
-                // Verify Clerk SDK availability on classpath
+                Log.d(TAG, "checkClerk called")
                 val clerkClass = Class.forName("com.clerk.api.Clerk")
                 response.put("sdkAvailable", true)
                 response.put("className", clerkClass.name)
 
                 val key = publishableKey ?: ""
                 if (key.isNotEmpty()) {
-                    cordova.activity.runOnUiThread {
-                        try {
-                            val context = cordova.activity.applicationContext
-                            Clerk.initialize(context, key)
-                            response.put("initialized", true)
-                            response.put("publishableKey", key)
-                            response.put("message", "Clerk SDK is present and successfully initialized.")
-                            response.put("status", "success")
-                            response.put("platform", "android")
-                            response.put("timestamp", System.currentTimeMillis())
-                            callbackContext.success(response)
-                        } catch (e: Exception) {
-                            response.put("initialized", false)
-                            response.put("error", e.message ?: e.toString())
-                            response.put("message", "Clerk SDK found, but initialization failed: ${e.message}")
-                            response.put("status", "error")
-                            response.put("platform", "android")
-                            response.put("timestamp", System.currentTimeMillis())
-                            callbackContext.error(response)
-                        }
+                    try {
+                        val context = cordova.activity.applicationContext
+                        Clerk.initialize(context, key)
+                        response.put("initialized", true)
+                        response.put("publishableKey", key)
+                        response.put("message", "Clerk SDK is present and successfully initialized.")
+                        Log.d(TAG, "Clerk SDK initialized via checkClerk")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Initialization failed in checkClerk", e)
+                        response.put("initialized", false)
+                        response.put("error", e.message ?: e.toString())
+                        response.put("message", "Clerk SDK found, but initialization failed: ${e.message}")
                     }
                 } else {
-                    response.put("initialized", false)
-                    response.put("message", "Clerk SDK is present on Android classpath. Pass a publishableKey to initialize.")
-                    response.put("status", "success")
-                    response.put("platform", "android")
-                    response.put("timestamp", System.currentTimeMillis())
-                    callbackContext.success(response)
+                    val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+                    response.put("initialized", isInit)
+                    response.put("message", "Clerk SDK is present on Android classpath.")
                 }
+
+                response.put("status", "success")
+                response.put("platform", "android")
+                response.put("timestamp", System.currentTimeMillis())
+                callbackContext.success(response)
             } catch (e: ClassNotFoundException) {
+                Log.e(TAG, "Clerk SDK class not found", e)
                 response.put("sdkAvailable", false)
                 response.put("status", "error")
                 response.put("message", "Clerk SDK (com.clerk.api.Clerk) was not found on the Android classpath.")
@@ -161,6 +162,7 @@ class Echo : CordovaPlugin() {
                 response.put("timestamp", System.currentTimeMillis())
                 callbackContext.error(response)
             } catch (e: Throwable) {
+                Log.e(TAG, "Error in checkClerk", e)
                 response.put("sdkAvailable", false)
                 response.put("status", "error")
                 response.put("message", "Error testing Clerk SDK: ${e.message}")
@@ -180,8 +182,9 @@ class Echo : CordovaPlugin() {
             callbackContext.error("Expected a non-empty publishableKey string argument.")
             return
         }
-        cordova.activity.runOnUiThread {
+        cordova.threadPool.execute {
             try {
+                Log.d(TAG, "initializeClerk called with key length ${key.length}")
                 val context = cordova.activity.applicationContext
                 Clerk.initialize(context, key)
                 val response = JSONObject()
@@ -190,8 +193,10 @@ class Echo : CordovaPlugin() {
                 response.put("publishableKey", key)
                 response.put("platform", "android")
                 response.put("timestamp", System.currentTimeMillis())
+                Log.d(TAG, "initializeClerk success")
                 callbackContext.success(response)
             } catch (e: Throwable) {
+                Log.e(TAG, "initializeClerk failed", e)
                 val response = JSONObject()
                 response.put("status", "error")
                 response.put("message", "Failed to initialize Clerk SDK: ${e.message}")
@@ -204,59 +209,145 @@ class Echo : CordovaPlugin() {
     }
 
     /**
+     * Diagnostic test pipeline verifying SDK state, network connectivity, and publishable key.
+     */
+    private fun testConnection(publishableKey: String?, callbackContext: CallbackContext) {
+        cordova.threadPool.execute {
+            val response = JSONObject()
+            val diagnostics = JSONObject()
+            try {
+                Log.d(TAG, "testConnection pipeline started")
+
+                // 1. SDK Class Check
+                val clerkClass = Class.forName("com.clerk.api.Clerk")
+                diagnostics.put("sdkAvailable", true)
+                diagnostics.put("sdkClass", clerkClass.name)
+
+                // 2. Auto-initialize if key provided
+                val key = publishableKey ?: ""
+                if (key.isNotEmpty()) {
+                    try {
+                        val context = cordova.activity.applicationContext
+                        Clerk.initialize(context, key)
+                        diagnostics.put("initialized", true)
+                    } catch (e: Throwable) {
+                        diagnostics.put("initialized", false)
+                        diagnostics.put("initError", e.message ?: e.toString())
+                    }
+                }
+
+                val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+                diagnostics.put("isSDKInitialized", isInit)
+
+                // 3. Network Ping Test to Clerk Server
+                var networkReachable = false
+                var responseCode = -1
+                try {
+                    val url = URL("https://api.clerk.com/v1/environment")
+                    val connection = url.openConnection() as HttpURLConnection
+                    connection.requestMethod = "GET"
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
+                    if (key.isNotEmpty()) {
+                        connection.setRequestProperty("Authorization", "Bearer $key")
+                    }
+                    connection.connect()
+                    responseCode = connection.responseCode
+                    networkReachable = (responseCode > 0)
+                    connection.disconnect()
+                } catch (netEx: Throwable) {
+                    Log.w(TAG, "Network ping failed: ${netEx.message}")
+                    diagnostics.put("networkError", netEx.message ?: netEx.toString())
+                }
+
+                diagnostics.put("networkReachable", networkReachable)
+                diagnostics.put("httpResponseCode", responseCode)
+
+                response.put("status", if (networkReachable && isInit) "success" else "warning")
+                response.put("message", "Connection diagnostic pipeline executed.")
+                response.put("diagnostics", diagnostics)
+                response.put("timestamp", System.currentTimeMillis())
+
+                Log.d(TAG, "testConnection pipeline result: $response")
+                callbackContext.success(response)
+            } catch (e: Throwable) {
+                Log.e(TAG, "testConnection pipeline exception", e)
+                response.put("status", "error")
+                response.put("message", "Diagnostic pipeline failed: ${e.message}")
+                response.put("error", e.toString())
+                response.put("diagnostics", diagnostics)
+                callbackContext.error(response)
+            }
+        }
+    }
+
+    /**
      * Sign in a user with identifier and password via Clerk SDK.
      */
     private fun signInWithPassword(identifier: String?, password: String?, callbackContext: CallbackContext) {
         val id = identifier ?: ""
         val pass = password ?: ""
-        Log.d(TAG, "signInWithPassword called for identifier: $id")
         if (id.isEmpty() || pass.isEmpty()) {
-            Log.w(TAG, "Empty identifier or password arguments provided to signInWithPassword")
+            Log.w(TAG, "signInWithPassword called with empty arguments")
             callbackContext.error("Expected non-empty identifier and password arguments.")
             return
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
+        cordova.threadPool.execute {
+            Log.d(TAG, "signInWithPassword execution started for identifier: $id")
             val response = JSONObject()
+
+            // Pre-check SDK initialization state
+            val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+            if (!isInit) {
+                Log.e(TAG, "signInWithPassword failed: Clerk SDK is not initialized")
+                response.put("status", "error")
+                response.put("message", "Clerk SDK is not initialized. Please call initializeClerk(publishableKey) first.")
+                callbackContext.error(response)
+                return@execute
+            }
+
             try {
-                if (!Clerk.isInitialized) {
-                    Log.e(TAG, "Clerk SDK is not initialized before sign in attempt")
-                    response.put("status", "error")
-                    response.put("message", "Clerk SDK is not initialized. Call initializeClerk(publishableKey) first.")
-                    callbackContext.error(response)
-                    return@launch
-                }
-
-                Log.d(TAG, "Invoking Clerk.auth.signInWithPassword for identifier: $id")
-                val result = Clerk.auth.signInWithPassword {
-                    this.identifier = id
-                    this.password = pass
-                }
-                Log.d(TAG, "signInWithPassword completed with result: $result")
-
-                when (result) {
-                    is com.clerk.api.network.serialization.ClerkResult.Success -> {
-                        val signInData = result.value
-                        response.put("status", "success")
-                        response.put("message", "Sign in successful")
-                        response.put("identifier", id)
-                        response.put("signInId", signInData.id)
-                        response.put("signInStatus", signInData.status.name)
-                        response.put("createdSessionId", signInData.createdSessionId ?: "")
-                        Log.d(TAG, "Sign in successful for $id, session: ${signInData.createdSessionId}")
-                        callbackContext.success(response)
+                runBlocking(Dispatchers.IO) {
+                    val result = withTimeoutOrNull(NETWORK_TIMEOUT_MS) {
+                        Clerk.auth.signInWithPassword {
+                            this.identifier = id
+                            this.password = pass
+                        }
                     }
-                    is com.clerk.api.network.serialization.ClerkResult.Failure -> {
-                        val err = result.throwable?.message ?: result.toString()
+
+                    if (result == null) {
+                        Log.e(TAG, "signInWithPassword timed out after ${NETWORK_TIMEOUT_MS}ms")
                         response.put("status", "error")
-                        response.put("message", "Sign in failed: $err")
-                        response.put("error", err)
-                        Log.w(TAG, "Sign in failed for $id: $err")
+                        response.put("message", "Sign in request timed out after ${NETWORK_TIMEOUT_MS / 1000} seconds. Please check your network connection.")
                         callbackContext.error(response)
+                        return@runBlocking
+                    }
+
+                    when (result) {
+                        is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                            val signInData = result.value
+                            Log.d(TAG, "signInWithPassword SUCCESS: signInId=${signInData.id}, status=${signInData.status.name}")
+                            response.put("status", "success")
+                            response.put("message", "Sign in successful")
+                            response.put("identifier", id)
+                            response.put("signInId", signInData.id)
+                            response.put("signInStatus", signInData.status.name)
+                            response.put("createdSessionId", signInData.createdSessionId)
+                            callbackContext.success(response)
+                        }
+                        is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                            val err = result.throwable?.message ?: result.toString()
+                            Log.e(TAG, "signInWithPassword FAILURE: $err")
+                            response.put("status", "error")
+                            response.put("message", "Sign in failed: $err")
+                            response.put("error", err)
+                            callbackContext.error(response)
+                        }
                     }
                 }
             } catch (e: Throwable) {
-                Log.e(TAG, "Exception during signInWithPassword: ${e.message}", e)
+                Log.e(TAG, "signInWithPassword Exception caught", e)
                 response.put("status", "error")
                 response.put("message", "Exception during sign in: ${e.message}")
                 response.put("error", e.toString())
@@ -269,38 +360,52 @@ class Echo : CordovaPlugin() {
      * Sign out active user session via Clerk SDK.
      */
     private fun signOut(callbackContext: CallbackContext) {
-        Log.d(TAG, "signOut called")
-        CoroutineScope(Dispatchers.IO).launch {
+        cordova.threadPool.execute {
+            Log.d(TAG, "signOut execution started")
             val response = JSONObject()
+
+            val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+            if (!isInit) {
+                Log.e(TAG, "signOut failed: Clerk SDK is not initialized")
+                response.put("status", "error")
+                response.put("message", "Clerk SDK is not initialized.")
+                callbackContext.error(response)
+                return@execute
+            }
+
             try {
-                if (!Clerk.isInitialized) {
-                    Log.e(TAG, "Clerk SDK is not initialized before sign out attempt")
-                    response.put("status", "error")
-                    response.put("message", "Clerk SDK is not initialized. Call initializeClerk(publishableKey) first.")
-                    callbackContext.error(response)
-                    return@launch
-                }
-
-                Log.d(TAG, "Invoking Clerk.auth.signOut()")
-                val result = Clerk.auth.signOut()
-                Log.d(TAG, "signOut completed with result: $result")
-
-                when (result) {
-                    is com.clerk.api.network.serialization.ClerkResult.Success -> {
-                        response.put("status", "success")
-                        response.put("message", "Signed out successfully")
-                        callbackContext.success(response)
+                runBlocking(Dispatchers.IO) {
+                    val result = withTimeoutOrNull(NETWORK_TIMEOUT_MS) {
+                        Clerk.auth.signOut()
                     }
-                    is com.clerk.api.network.serialization.ClerkResult.Failure -> {
-                        val err = result.throwable?.message ?: result.toString()
+
+                    if (result == null) {
+                        Log.e(TAG, "signOut timed out after ${NETWORK_TIMEOUT_MS}ms")
                         response.put("status", "error")
-                        response.put("message", "Sign out failed: $err")
-                        response.put("error", err)
+                        response.put("message", "Sign out request timed out.")
                         callbackContext.error(response)
+                        return@runBlocking
+                    }
+
+                    when (result) {
+                        is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                            Log.d(TAG, "signOut SUCCESS")
+                            response.put("status", "success")
+                            response.put("message", "Signed out successfully")
+                            callbackContext.success(response)
+                        }
+                        is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                            val err = result.throwable?.message ?: result.toString()
+                            Log.e(TAG, "signOut FAILURE: $err")
+                            response.put("status", "error")
+                            response.put("message", "Sign out failed: $err")
+                            response.put("error", err)
+                            callbackContext.error(response)
+                        }
                     }
                 }
             } catch (e: Throwable) {
-                Log.e(TAG, "Exception during signOut: ${e.message}", e)
+                Log.e(TAG, "signOut Exception caught", e)
                 response.put("status", "error")
                 response.put("message", "Exception during sign out: ${e.message}")
                 response.put("error", e.toString())
@@ -313,22 +418,24 @@ class Echo : CordovaPlugin() {
      * Query current active user session status via Clerk SDK.
      */
     private fun getCurrentUser(callbackContext: CallbackContext) {
-        Log.d(TAG, "getCurrentUser called")
-        CoroutineScope(Dispatchers.IO).launch {
+        cordova.threadPool.execute {
+            Log.d(TAG, "getCurrentUser execution started")
             val response = JSONObject()
             try {
-                if (!Clerk.isInitialized) {
+                val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+                if (!isInit) {
                     response.put("status", "success")
                     response.put("isSignedIn", false)
                     response.put("message", "Clerk SDK is not initialized.")
                     callbackContext.success(response)
-                    return@launch
+                    return@execute
                 }
 
                 val sessions = Clerk.auth.sessions
                 if (sessions.isNotEmpty()) {
                     val activeSession = sessions.first()
                     val user = activeSession.user
+                    Log.d(TAG, "getCurrentUser: active session found ID=${activeSession.id}")
                     response.put("status", "success")
                     response.put("isSignedIn", true)
                     response.put("sessionId", activeSession.id)
@@ -337,13 +444,14 @@ class Echo : CordovaPlugin() {
                     response.put("lastName", user?.lastName ?: "")
                     callbackContext.success(response)
                 } else {
+                    Log.d(TAG, "getCurrentUser: no active sessions")
                     response.put("status", "success")
                     response.put("isSignedIn", false)
                     response.put("message", "No active signed-in user session found.")
                     callbackContext.success(response)
                 }
             } catch (e: Throwable) {
-                Log.e(TAG, "Exception during getCurrentUser: ${e.message}", e)
+                Log.e(TAG, "getCurrentUser Exception caught", e)
                 response.put("status", "error")
                 response.put("message", "Failed to retrieve current user status: ${e.message}")
                 response.put("error", e.toString())

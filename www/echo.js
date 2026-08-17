@@ -126,6 +126,22 @@ var Echo = {
      */
     getCurrentUser: function (successCallback, errorCallback) {
         exec(successCallback, errorCallback, 'Echo', 'getCurrentUser', []);
+    },
+
+    /**
+     * Run a connection diagnostic pipeline to test SDK initialization and Clerk backend connectivity
+     * @param {string} [publishableKey] - Optional Clerk Publishable Key
+     * @param {function} successCallback - Callback returning JSON diagnostic object
+     * @param {function} errorCallback - Callback returning JSON error object
+     */
+    testConnection: function (publishableKey, successCallback, errorCallback) {
+        if (typeof publishableKey === 'function') {
+            errorCallback = successCallback;
+            successCallback = publishableKey;
+            publishableKey = '';
+        }
+        var key = (typeof publishableKey === 'string') ? publishableKey : '';
+        exec(successCallback, errorCallback, 'Echo', 'testConnection', [key]);
     }
 };
 
