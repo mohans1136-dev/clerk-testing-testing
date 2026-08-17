@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        xmlns:android="http://schemas.android.com/apk/res/android"
+        id="cordova-plugin-echo"
+        version="1.0.0">
+
+    <name>EchoPlugin</name>
+    <description>Cordova Android Echo Plugin written in Kotlin</description>
+    <license>Apache-2.0</license>
+    <keywords>cordova,kotlin,android,outsystems,echo</keywords>
+
+    <!-- JavaScript Interface -->
+    <js-module src="www/echo.js" name="echo">
+        <clobbers target="cordova.plugins.echo" />
+        <clobbers target="window.echo" />
+    </js-module>
+
+    <!-- Android Platform -->
+    <platform name="android">
+        <config-file target="res/xml/config.xml" parent="/*">
+            <feature name="Echo">
+                <param name="android-package" value="org.apache.cordova.plugin.echo.Echo" />
+            </feature>
+            <!-- Enable Kotlin support in Cordova Android 9+ / OutSystems MABS -->
+            <preference name="GradlePluginKotlinEnabled" value="true" />
+            <preference name="GradlePluginKotlinCodeStyle" value="official" />
+            <preference name="GradlePluginKotlinVersion" value="1.9.24" />
+        </config-file>
+
+        <config-file target="AndroidManifest.xml" parent="/manifest">
+            <uses-permission android:name="android.permission.INTERNET" />
+        </config-file>
+
+        <!-- Dependencies -->
+        <framework src="com.clerk:clerk-android-api:1.1.1" />
+
+        <!-- Source Files -->
+        <source-file src="src/android/org/apache/cordova/plugin/echo/Echo.kt" target-dir="app/src/main/kotlin/org/apache/cordova/plugin/echo" />
+    </platform>
+
+</plugin>

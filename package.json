@@ -1,0 +1,24 @@
+{
+  "name": "cordova-plugin-echo",
+  "version": "1.0.0",
+  "description": "Simple Cordova Android Plugin in Kotlin (Echo Plugin)",
+  "cordova": {
+    "id": "cordova-plugin-echo",
+    "platforms": [
+      "android"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/example/cordova-plugin-echo.git"
+  },
+  "keywords": [
+    "ecosystem:cordova",
+    "cordova-android",
+    "kotlin",
+    "outsystems",
+    "echo"
+  ],
+  "author": "Antigravity",
+  "license": "Apache-2.0"
+}
