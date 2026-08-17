@@ -56,8 +56,9 @@ class Echo : CordovaPlugin() {
     }
 
     private fun echo(message: String?, callbackContext: CallbackContext) {
-        if (!message.isNullOrEmpty()) {
-            callbackContext.success(message)
+        val msg = message ?: ""
+        if (msg.isNotEmpty()) {
+            callbackContext.success(msg)
         } else {
             callbackContext.error("Expected one non-empty string argument.")
         }
@@ -65,13 +66,13 @@ class Echo : CordovaPlugin() {
 
     private fun echoAsync(message: String?, callbackContext: CallbackContext) {
         cordova.threadPool.execute {
-            if (!message.isNullOrEmpty()) {
-                val response = JSONObject().apply {
-                    put("status", "success")
-                    put("message", message)
-                    put("timestamp", System.currentTimeMillis())
-                    put("language", "Kotlin")
-                }
+            val msg = message ?: ""
+            if (msg.isNotEmpty()) {
+                val response = JSONObject()
+                response.put("status", "success")
+                response.put("message", msg)
+                response.put("timestamp", System.currentTimeMillis())
+                response.put("language", "Kotlin")
                 callbackContext.success(response)
             } else {
                 callbackContext.error("Expected one non-empty string argument.")
@@ -84,11 +85,10 @@ class Echo : CordovaPlugin() {
             callbackContext.error("Expected two valid numeric arguments.")
         } else {
             val sum = num1 + num2
-            val response = JSONObject().apply {
-                put("num1", num1)
-                put("num2", num2)
-                put("sum", sum)
-            }
+            val response = JSONObject()
+            response.put("num1", num1)
+            response.put("num2", num2)
+            response.put("sum", sum)
             callbackContext.success(response)
         }
     }
@@ -105,12 +105,13 @@ class Echo : CordovaPlugin() {
                 response.put("sdkAvailable", true)
                 response.put("className", clerkClass.name)
 
-                if (!publishableKey.isNullOrEmpty()) {
+                val key = publishableKey ?: ""
+                if (key.isNotEmpty()) {
                     try {
                         val context = cordova.activity.applicationContext
-                        Clerk.initialize(context, publishableKey)
+                        Clerk.initialize(context, key)
                         response.put("initialized", true)
-                        response.put("publishableKey", publishableKey)
+                        response.put("publishableKey", key)
                         response.put("message", "Clerk SDK is present and successfully initialized.")
                     } catch (e: Exception) {
                         response.put("initialized", false)
@@ -148,30 +149,29 @@ class Echo : CordovaPlugin() {
      * Explicitly initialize Clerk Android SDK with a Publishable Key.
      */
     private fun initializeClerk(publishableKey: String?, callbackContext: CallbackContext) {
-        if (publishableKey.isNullOrEmpty()) {
+        val key = publishableKey ?: ""
+        if (key.isEmpty()) {
             callbackContext.error("Expected a non-empty publishableKey string argument.")
             return
         }
         cordova.threadPool.execute {
             try {
                 val context = cordova.activity.applicationContext
-                Clerk.initialize(context, publishableKey)
-                val response = JSONObject().apply {
-                    put("status", "success")
-                    put("message", "Clerk SDK initialized successfully.")
-                    put("publishableKey", publishableKey)
-                    put("platform", "android")
-                    put("timestamp", System.currentTimeMillis())
-                }
+                Clerk.initialize(context, key)
+                val response = JSONObject()
+                response.put("status", "success")
+                response.put("message", "Clerk SDK initialized successfully.")
+                response.put("publishableKey", key)
+                response.put("platform", "android")
+                response.put("timestamp", System.currentTimeMillis())
                 callbackContext.success(response)
             } catch (e: Throwable) {
-                val response = JSONObject().apply {
-                    put("status", "error")
-                    put("message", "Failed to initialize Clerk SDK: ${e.message}")
-                    put("error", e.toString())
-                    put("platform", "android")
-                    put("timestamp", System.currentTimeMillis())
-                }
+                val response = JSONObject()
+                response.put("status", "error")
+                response.put("message", "Failed to initialize Clerk SDK: ${e.message}")
+                response.put("error", e.toString())
+                response.put("platform", "android")
+                response.put("timestamp", System.currentTimeMillis())
                 callbackContext.error(response)
             }
         }
