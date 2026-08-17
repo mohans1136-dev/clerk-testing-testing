@@ -4,7 +4,7 @@ ext.postBuildExtras = {
             freeCompilerArgs += ["-Xskip-metadata-version-check"]
         }
     }
-    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    tasks.matching { it.name.toLowerCase().endsWith("kotlin") }.all {
         kotlinOptions {
             freeCompilerArgs += ["-Xskip-metadata-version-check"]
         }
