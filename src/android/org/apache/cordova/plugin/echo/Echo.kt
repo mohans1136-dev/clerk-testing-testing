@@ -124,26 +124,35 @@ class Echo : CordovaPlugin() {
 
                 val key = publishableKey ?: ""
                 if (key.isNotEmpty()) {
-                    try {
-                        val context = cordova.activity.applicationContext
-                        Clerk.initialize(context, key)
-                        response.put("initialized", true)
-                        response.put("publishableKey", key)
-                        response.put("message", "Clerk SDK is present and successfully initialized.")
-                    } catch (e: Exception) {
-                        response.put("initialized", false)
-                        response.put("error", e.message ?: e.toString())
-                        response.put("message", "Clerk SDK found, but initialization failed: ${e.message}")
+                    cordova.activity.runOnUiThread {
+                        try {
+                            val context = cordova.activity.applicationContext
+                            Clerk.initialize(context, key)
+                            response.put("initialized", true)
+                            response.put("publishableKey", key)
+                            response.put("message", "Clerk SDK is present and successfully initialized.")
+                            response.put("status", "success")
+                            response.put("platform", "android")
+                            response.put("timestamp", System.currentTimeMillis())
+                            callbackContext.success(response)
+                        } catch (e: Exception) {
+                            response.put("initialized", false)
+                            response.put("error", e.message ?: e.toString())
+                            response.put("message", "Clerk SDK found, but initialization failed: ${e.message}")
+                            response.put("status", "error")
+                            response.put("platform", "android")
+                            response.put("timestamp", System.currentTimeMillis())
+                            callbackContext.error(response)
+                        }
                     }
                 } else {
                     response.put("initialized", false)
                     response.put("message", "Clerk SDK is present on Android classpath. Pass a publishableKey to initialize.")
+                    response.put("status", "success")
+                    response.put("platform", "android")
+                    response.put("timestamp", System.currentTimeMillis())
+                    callbackContext.success(response)
                 }
-
-                response.put("status", "success")
-                response.put("platform", "android")
-                response.put("timestamp", System.currentTimeMillis())
-                callbackContext.success(response)
             } catch (e: ClassNotFoundException) {
                 response.put("sdkAvailable", false)
                 response.put("status", "error")
@@ -171,7 +180,7 @@ class Echo : CordovaPlugin() {
             callbackContext.error("Expected a non-empty publishableKey string argument.")
             return
         }
-        cordova.threadPool.execute {
+        cordova.activity.runOnUiThread {
             try {
                 val context = cordova.activity.applicationContext
                 Clerk.initialize(context, key)
