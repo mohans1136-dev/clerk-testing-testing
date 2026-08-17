@@ -144,7 +144,7 @@ class Echo : CordovaPlugin() {
                         response.put("message", "Clerk SDK found, but initialization failed: ${e.message}")
                     }
                 } else {
-                    val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+                    val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
                     response.put("initialized", isInit)
                     response.put("message", "Clerk SDK is present on Android classpath.")
                 }
@@ -236,7 +236,7 @@ class Echo : CordovaPlugin() {
                     }
                 }
 
-                val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+                val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
                 diagnostics.put("isSDKInitialized", isInit)
 
                 // 3. Network Ping Test to Clerk Server
@@ -298,7 +298,7 @@ class Echo : CordovaPlugin() {
             val response = JSONObject()
 
             // Pre-check SDK initialization state
-            val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+            val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
             if (!isInit) {
                 Log.e(TAG, "signInWithPassword failed: Clerk SDK is not initialized")
                 response.put("status", "error")
@@ -364,7 +364,7 @@ class Echo : CordovaPlugin() {
             Log.d(TAG, "signOut execution started")
             val response = JSONObject()
 
-            val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+            val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
             if (!isInit) {
                 Log.e(TAG, "signOut failed: Clerk SDK is not initialized")
                 response.put("status", "error")
@@ -422,7 +422,7 @@ class Echo : CordovaPlugin() {
             Log.d(TAG, "getCurrentUser execution started")
             val response = JSONObject()
             try {
-                val isInit = try { Clerk.isInitialized } catch (t: Throwable) { false }
+                val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
                 if (!isInit) {
                     response.put("status", "success")
                     response.put("isSignedIn", false)
