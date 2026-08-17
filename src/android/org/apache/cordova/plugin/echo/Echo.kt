@@ -337,11 +337,22 @@ class Echo : CordovaPlugin() {
                             callbackContext.success(response)
                         }
                         is com.clerk.api.network.serialization.ClerkResult.Failure -> {
-                            val err = result.throwable?.message ?: result.toString()
-                            Log.e(TAG, "signInWithPassword FAILURE: $err")
+                            val errDetail = try {
+                                val failure = result as? com.clerk.api.network.serialization.ClerkResult.Failure<*>
+                                val errObj = failure?.error
+                                if (errObj is com.clerk.api.network.model.error.ClerkErrorResponse) {
+                                    val firstErr = errObj.errors.firstOrNull()
+                                    firstErr?.longMessage ?: firstErr?.message ?: errObj.toString()
+                                } else {
+                                    failure?.throwable?.message ?: failure?.error?.toString() ?: result.toString()
+                                }
+                            } catch (t: Throwable) {
+                                result.toString()
+                            }
+                            Log.e(TAG, "signInWithPassword FAILURE: $errDetail")
                             response.put("status", "error")
-                            response.put("message", "Sign in failed: $err")
-                            response.put("error", err)
+                            response.put("message", "Sign in failed: $errDetail")
+                            response.put("error", errDetail)
                             callbackContext.error(response)
                         }
                     }
@@ -395,11 +406,22 @@ class Echo : CordovaPlugin() {
                             callbackContext.success(response)
                         }
                         is com.clerk.api.network.serialization.ClerkResult.Failure -> {
-                            val err = result.throwable?.message ?: result.toString()
-                            Log.e(TAG, "signOut FAILURE: $err")
+                            val errDetail = try {
+                                val failure = result as? com.clerk.api.network.serialization.ClerkResult.Failure<*>
+                                val errObj = failure?.error
+                                if (errObj is com.clerk.api.network.model.error.ClerkErrorResponse) {
+                                    val firstErr = errObj.errors.firstOrNull()
+                                    firstErr?.longMessage ?: firstErr?.message ?: errObj.toString()
+                                } else {
+                                    failure?.throwable?.message ?: failure?.error?.toString() ?: result.toString()
+                                }
+                            } catch (t: Throwable) {
+                                result.toString()
+                            }
+                            Log.e(TAG, "signOut FAILURE: $errDetail")
                             response.put("status", "error")
-                            response.put("message", "Sign out failed: $err")
-                            response.put("error", err)
+                            response.put("message", "Sign out failed: $errDetail")
+                            response.put("error", errDetail)
                             callbackContext.error(response)
                         }
                     }
