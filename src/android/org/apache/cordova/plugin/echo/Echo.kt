@@ -222,9 +222,10 @@ class Echo : CordovaPlugin() {
                             callbackContext.success(response)
                         }
                         is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                            val err = result.throwable?.message ?: result.toString()
                             response.put("status", "error")
-                            response.put("message", "Sign in failed: ${result.errorMessage}")
-                            response.put("error", result.errorMessage)
+                            response.put("message", "Sign in failed: $err")
+                            response.put("error", err)
                             callbackContext.error(response)
                         }
                     }
@@ -255,9 +256,10 @@ class Echo : CordovaPlugin() {
                             callbackContext.success(response)
                         }
                         is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                            val err = result.throwable?.message ?: result.toString()
                             response.put("status", "error")
-                            response.put("message", "Sign out failed: ${result.errorMessage}")
-                            response.put("error", result.errorMessage)
+                            response.put("message", "Sign out failed: $err")
+                            response.put("error", err)
                             callbackContext.error(response)
                         }
                     }
@@ -277,17 +279,15 @@ class Echo : CordovaPlugin() {
      */
     private fun getCurrentUser(callbackContext: CallbackContext) {
         cordova.threadPool.execute {
+            val response = JSONObject()
             try {
-                val response = JSONObject()
-                val session = Clerk.session
-                val user = Clerk.user
-                if (session != null && user != null) {
+                val sessions = Clerk.auth.sessions
+                if (sessions.isNotEmpty()) {
+                    val activeSession = sessions.first()
                     response.put("status", "success")
                     response.put("isSignedIn", true)
-                    response.put("userId", user.id)
-                    response.put("sessionId", session.id)
-                    response.put("firstName", user.firstName)
-                    response.put("lastName", user.lastName)
+                    response.put("sessionId", activeSession.id)
+                    response.put("userId", activeSession.userId)
                     callbackContext.success(response)
                 } else {
                     response.put("status", "success")
@@ -296,7 +296,6 @@ class Echo : CordovaPlugin() {
                     callbackContext.success(response)
                 }
             } catch (e: Throwable) {
-                val response = JSONObject()
                 response.put("status", "error")
                 response.put("message", "Failed to retrieve current user status: ${e.message}")
                 response.put("error", e.toString())
