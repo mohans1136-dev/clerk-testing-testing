@@ -117,6 +117,49 @@ class Echo : CordovaPlugin() {
     }
 
     /**
+     * Safely extract human-readable error messages from ClerkResult.Failure.
+     */
+    private fun extractClerkError(failure: com.clerk.api.network.serialization.ClerkResult.Failure<*>): Pair<String, String> {
+        var errorMessage = ""
+        var errorCode = ""
+        val errorObj = failure.error
+        val throwable = failure.throwable
+
+        if (errorObj != null) {
+            try {
+                val errorsField = errorObj.javaClass.getDeclaredField("errors")
+                errorsField.isAccessible = true
+                val errorsList = errorsField.get(errorObj) as? List<*>
+                if (!errorsList.isNullOrEmpty()) {
+                    val firstErr = errorsList.first()
+                    if (firstErr != null) {
+                        val longMsgField = try { firstErr.javaClass.getDeclaredField("longMessage") } catch (t: Throwable) { null }
+                        val msgField = try { firstErr.javaClass.getDeclaredField("message") } catch (t: Throwable) { null }
+                        val codeField = try { firstErr.javaClass.getDeclaredField("code") } catch (t: Throwable) { null }
+
+                        longMsgField?.isAccessible = true
+                        msgField?.isAccessible = true
+                        codeField?.isAccessible = true
+
+                        val longMsg = longMsgField?.get(firstErr) as? String
+                        val msg = msgField?.get(firstErr) as? String
+                        errorCode = (codeField?.get(firstErr) as? String) ?: ""
+                        errorMessage = longMsg ?: msg ?: ""
+                    }
+                }
+            } catch (t: Throwable) {
+                errorMessage = errorObj.toString()
+            }
+        }
+
+        if (errorMessage.isEmpty()) {
+            errorMessage = throwable?.message ?: failure.toString()
+        }
+
+        return Pair(errorMessage, errorCode)
+    }
+
+    /**
      * Check Clerk Android SDK availability on classpath and test initialization.
      */
     private fun checkClerk(publishableKey: String?, callbackContext: CallbackContext) {
@@ -218,12 +261,10 @@ class Echo : CordovaPlugin() {
             try {
                 Log.d(TAG, "testConnection pipeline started")
 
-                // 1. SDK Class Check
                 val clerkClass = Class.forName("com.clerk.api.Clerk")
                 diagnostics.put("sdkAvailable", true)
                 diagnostics.put("sdkClass", clerkClass.name)
 
-                // 2. Auto-initialize if key provided
                 val key = publishableKey ?: ""
                 if (key.isNotEmpty()) {
                     try {
@@ -239,7 +280,6 @@ class Echo : CordovaPlugin() {
                 val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
                 diagnostics.put("isSDKInitialized", isInit)
 
-                // 3. Network Ping Test to Clerk Server
                 var networkReachable = false
                 var responseCode = -1
                 try {
@@ -297,7 +337,6 @@ class Echo : CordovaPlugin() {
             Log.d(TAG, "signInWithPassword execution started for identifier: $id")
             val response = JSONObject()
 
-            // Pre-check SDK initialization state
             val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
             if (!isInit) {
                 Log.e(TAG, "signInWithPassword failed: Clerk SDK is not initialized")
@@ -337,22 +376,12 @@ class Echo : CordovaPlugin() {
                             callbackContext.success(response)
                         }
                         is com.clerk.api.network.serialization.ClerkResult.Failure -> {
-                            val errDetail = try {
-                                val failure = result as? com.clerk.api.network.serialization.ClerkResult.Failure<*>
-                                val errObj = failure?.error
-                                if (errObj is com.clerk.api.network.model.error.ClerkErrorResponse) {
-                                    val firstErr = errObj.errors.firstOrNull()
-                                    firstErr?.longMessage ?: firstErr?.message ?: errObj.toString()
-                                } else {
-                                    failure?.throwable?.message ?: failure?.error?.toString() ?: result.toString()
-                                }
-                            } catch (t: Throwable) {
-                                result.toString()
-                            }
-                            Log.e(TAG, "signInWithPassword FAILURE: $errDetail")
+                            val (errMessage, errCode) = extractClerkError(result)
+                            Log.e(TAG, "signInWithPassword FAILURE: $errMessage (code: $errCode)")
                             response.put("status", "error")
-                            response.put("message", "Sign in failed: $errDetail")
-                            response.put("error", errDetail)
+                            response.put("message", errMessage)
+                            response.put("errorCode", errCode)
+                            response.put("error", errMessage)
                             callbackContext.error(response)
                         }
                     }
@@ -406,22 +435,12 @@ class Echo : CordovaPlugin() {
                             callbackContext.success(response)
                         }
                         is com.clerk.api.network.serialization.ClerkResult.Failure -> {
-                            val errDetail = try {
-                                val failure = result as? com.clerk.api.network.serialization.ClerkResult.Failure<*>
-                                val errObj = failure?.error
-                                if (errObj is com.clerk.api.network.model.error.ClerkErrorResponse) {
-                                    val firstErr = errObj.errors.firstOrNull()
-                                    firstErr?.longMessage ?: firstErr?.message ?: errObj.toString()
-                                } else {
-                                    failure?.throwable?.message ?: failure?.error?.toString() ?: result.toString()
-                                }
-                            } catch (t: Throwable) {
-                                result.toString()
-                            }
-                            Log.e(TAG, "signOut FAILURE: $errDetail")
+                            val (errMessage, errCode) = extractClerkError(result)
+                            Log.e(TAG, "signOut FAILURE: $errMessage (code: $errCode)")
                             response.put("status", "error")
-                            response.put("message", "Sign out failed: $errDetail")
-                            response.put("error", errDetail)
+                            response.put("message", errMessage)
+                            response.put("errorCode", errCode)
+                            response.put("error", errMessage)
                             callbackContext.error(response)
                         }
                     }
