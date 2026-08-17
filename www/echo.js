@@ -85,6 +85,47 @@ var Echo = {
             return;
         }
         exec(successCallback, errorCallback, 'Echo', 'initializeClerk', [publishableKey]);
+    },
+
+    /**
+     * Sign in a user with identifier (email/username) and password via Clerk SDK
+     * @param {string} identifier - User email, phone, or username
+     * @param {string} password - User password
+     * @param {function} successCallback - Callback returning JSON object on success
+     * @param {function} errorCallback - Callback returning JSON object on error
+     */
+    signInWithPassword: function (identifier, password, successCallback, errorCallback) {
+        if (typeof identifier !== 'string' || identifier.trim() === '') {
+            if (typeof errorCallback === 'function') {
+                errorCallback('Expected a non-empty identifier string argument.');
+            }
+            return;
+        }
+        if (typeof password !== 'string' || password.trim() === '') {
+            if (typeof errorCallback === 'function') {
+                errorCallback('Expected a non-empty password string argument.');
+            }
+            return;
+        }
+        exec(successCallback, errorCallback, 'Echo', 'signInWithPassword', [identifier, password]);
+    },
+
+    /**
+     * Sign out the active user and clear session via Clerk SDK
+     * @param {function} successCallback - Callback returning JSON object on success
+     * @param {function} errorCallback - Callback returning JSON object on error
+     */
+    signOut: function (successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'Echo', 'signOut', []);
+    },
+
+    /**
+     * Get details for the currently active Clerk user session
+     * @param {function} successCallback - Callback returning user metadata or status
+     * @param {function} errorCallback - Callback returning error object
+     */
+    getCurrentUser: function (successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'Echo', 'getCurrentUser', []);
     }
 };
 

@@ -51,6 +51,20 @@ class Echo : CordovaPlugin() {
                 this.initializeClerk(publishableKey, callbackContext)
                 true
             }
+            "signInWithPassword" -> {
+                val identifier = args.optString(0, "")
+                val password = args.optString(1, "")
+                this.signInWithPassword(identifier, password, callbackContext)
+                true
+            }
+            "signOut" -> {
+                this.signOut(callbackContext)
+                true
+            }
+            "getCurrentUser" -> {
+                this.getCurrentUser(callbackContext)
+                true
+            }
             else -> false
         }
     }
@@ -172,6 +186,120 @@ class Echo : CordovaPlugin() {
                 response.put("error", e.toString())
                 response.put("platform", "android")
                 response.put("timestamp", System.currentTimeMillis())
+                callbackContext.error(response)
+            }
+        }
+    }
+
+    /**
+     * Sign in a user with identifier and password via Clerk SDK.
+     */
+    private fun signInWithPassword(identifier: String?, password: String?, callbackContext: CallbackContext) {
+        val id = identifier ?: ""
+        val pass = password ?: ""
+        if (id.isEmpty() || pass.isEmpty()) {
+            callbackContext.error("Expected non-empty identifier and password arguments.")
+            return
+        }
+
+        cordova.threadPool.execute {
+            try {
+                val response = JSONObject()
+                kotlinx.coroutines.runBlocking {
+                    val result = Clerk.auth.signInWithPassword {
+                        this.identifier = id
+                        this.password = pass
+                    }
+                    when (result) {
+                        is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                            val signInData = result.value
+                            response.put("status", "success")
+                            response.put("message", "Sign in successful")
+                            response.put("identifier", id)
+                            response.put("signInId", signInData.id)
+                            response.put("signInStatus", signInData.status.name)
+                            response.put("createdSessionId", signInData.createdSessionId)
+                            callbackContext.success(response)
+                        }
+                        is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                            response.put("status", "error")
+                            response.put("message", "Sign in failed: ${result.errorMessage}")
+                            response.put("error", result.errorMessage)
+                            callbackContext.error(response)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                val response = JSONObject()
+                response.put("status", "error")
+                response.put("message", "Exception during sign in: ${e.message}")
+                response.put("error", e.toString())
+                callbackContext.error(response)
+            }
+        }
+    }
+
+    /**
+     * Sign out active user session via Clerk SDK.
+     */
+    private fun signOut(callbackContext: CallbackContext) {
+        cordova.threadPool.execute {
+            try {
+                val response = JSONObject()
+                kotlinx.coroutines.runBlocking {
+                    val result = Clerk.auth.signOut()
+                    when (result) {
+                        is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                            response.put("status", "success")
+                            response.put("message", "Signed out successfully")
+                            callbackContext.success(response)
+                        }
+                        is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                            response.put("status", "error")
+                            response.put("message", "Sign out failed: ${result.errorMessage}")
+                            response.put("error", result.errorMessage)
+                            callbackContext.error(response)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                val response = JSONObject()
+                response.put("status", "error")
+                response.put("message", "Exception during sign out: ${e.message}")
+                response.put("error", e.toString())
+                callbackContext.error(response)
+            }
+        }
+    }
+
+    /**
+     * Query current active user session status via Clerk SDK.
+     */
+    private fun getCurrentUser(callbackContext: CallbackContext) {
+        cordova.threadPool.execute {
+            try {
+                val response = JSONObject()
+                val session = Clerk.session
+                val user = Clerk.user
+                if (session != null && user != null) {
+                    response.put("status", "success")
+                    response.put("isSignedIn", true)
+                    response.put("userId", user.id)
+                    response.put("sessionId", session.id)
+                    response.put("firstName", user.firstName)
+                    response.put("lastName", user.lastName)
+                    callbackContext.success(response)
+                } else {
+                    response.put("status", "success")
+                    response.put("isSignedIn", false)
+                    response.put("message", "No active signed-in user session found.")
+                    callbackContext.success(response)
+                }
+            } catch (e: Throwable) {
+                val response = JSONObject()
+                response.put("status", "error")
+                response.put("message", "Failed to retrieve current user status: ${e.message}")
+                response.put("error", e.toString())
                 callbackContext.error(response)
             }
         }
