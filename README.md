@@ -132,6 +132,60 @@ cordova.plugins.echo.initializeClerk(
 );
 ```
 
+### 6. `cordova.plugins.echo.signInWithPassword(identifier, password, successCallback, errorCallback)`
+
+Authenticates a user using email/username and password via Clerk SDK.
+
+```javascript
+cordova.plugins.echo.signInWithPassword(
+    "user@example.com",
+    "password123",
+    function(response) {
+        console.log("Status:", response.status);               // "success"
+        console.log("Session ID:", response.createdSessionId);
+        console.log("Sign In ID:", response.signInId);
+    },
+    function(error) {
+        console.error("Sign in failed:", error.message || error);
+    }
+);
+```
+
+### 7. `cordova.plugins.echo.signOut(successCallback, errorCallback)`
+
+Signs out the active user session via Clerk SDK.
+
+```javascript
+cordova.plugins.echo.signOut(
+    function(response) {
+        console.log("Status:", response.status);   // "success"
+        console.log("Message:", response.message); // "Signed out successfully"
+    },
+    function(error) {
+        console.error("Sign out failed:", error);
+    }
+);
+```
+
+### 8. `cordova.plugins.echo.getCurrentUser(successCallback, errorCallback)`
+
+Retrieves the currently active user session status.
+
+```javascript
+cordova.plugins.echo.getCurrentUser(
+    function(response) {
+        console.log("Is Signed In:", response.isSignedIn);
+        if (response.isSignedIn) {
+            console.log("User ID:", response.userId);
+            console.log("Session ID:", response.sessionId);
+        }
+    },
+    function(error) {
+        console.error("Error retrieving user status:", error);
+    }
+);
+```
+
 ---
 
 ## ⚡ Integration with OutSystems Mobile Apps

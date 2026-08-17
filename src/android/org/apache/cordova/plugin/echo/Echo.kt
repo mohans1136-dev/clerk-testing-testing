@@ -284,10 +284,13 @@ class Echo : CordovaPlugin() {
                 val sessions = Clerk.auth.sessions
                 if (sessions.isNotEmpty()) {
                     val activeSession = sessions.first()
+                    val user = activeSession.user
                     response.put("status", "success")
                     response.put("isSignedIn", true)
                     response.put("sessionId", activeSession.id)
-                    response.put("userId", activeSession.userId)
+                    response.put("userId", user?.id ?: "")
+                    response.put("firstName", user?.firstName ?: "")
+                    response.put("lastName", user?.lastName ?: "")
                     callbackContext.success(response)
                 } else {
                     response.put("status", "success")
