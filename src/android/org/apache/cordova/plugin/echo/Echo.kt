@@ -243,7 +243,7 @@ class Echo : CordovaPlugin() {
                 val syncConfig = if (enableSharedSessionSync) {
                     SharedSessionSyncConfig.enabled
                 } else {
-                    SharedSessionSyncConfig.disabled
+                    null
                 }
                 val options = ClerkConfigurationOptions(
                     sharedSessionSync = syncConfig
