@@ -6,6 +6,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import android.util.Log
 import com.clerk.api.Clerk
+import com.clerk.api.ClerkConfigurationOptions
+import com.clerk.api.SharedSessionSyncConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -52,7 +54,8 @@ class Echo : CordovaPlugin() {
             }
             "initializeClerk" -> {
                 val publishableKey = args.optString(0, "")
-                this.initializeClerk(publishableKey, callbackContext)
+                val enableSharedSessionSync = args.optBoolean(1, true)
+                this.initializeClerk(publishableKey, enableSharedSessionSync, callbackContext)
                 true
             }
             "signInWithPassword" -> {
@@ -67,6 +70,10 @@ class Echo : CordovaPlugin() {
             }
             "getCurrentUser" -> {
                 this.getCurrentUser(callbackContext)
+                true
+            }
+            "reloadFromSharedStorage" -> {
+                this.reloadFromSharedStorage(callbackContext)
                 true
             }
             "testConnection" -> {
@@ -175,11 +182,15 @@ class Echo : CordovaPlugin() {
                 if (key.isNotEmpty()) {
                     try {
                         val context = cordova.activity.applicationContext
-                        Clerk.initialize(context, key)
+                        val options = ClerkConfigurationOptions(
+                            sharedSessionSync = SharedSessionSyncConfig.enabled
+                        )
+                        Clerk.initialize(context, key, options)
                         response.put("initialized", true)
                         response.put("publishableKey", key)
-                        response.put("message", "Clerk SDK is present and successfully initialized.")
-                        Log.d(TAG, "Clerk SDK initialized via checkClerk")
+                        response.put("sharedSessionSyncEnabled", true)
+                        response.put("message", "Clerk SDK is present and successfully initialized with Shared Session Sync.")
+                        Log.d(TAG, "Clerk SDK initialized via checkClerk with Shared Session Sync")
                     } catch (e: Exception) {
                         Log.e(TAG, "Initialization failed in checkClerk", e)
                         response.put("initialized", false)
@@ -217,9 +228,9 @@ class Echo : CordovaPlugin() {
     }
 
     /**
-     * Explicitly initialize Clerk Android SDK with a Publishable Key.
+     * Explicitly initialize Clerk Android SDK with a Publishable Key and optional Shared Session Sync.
      */
-    private fun initializeClerk(publishableKey: String?, callbackContext: CallbackContext) {
+    private fun initializeClerk(publishableKey: String?, enableSharedSessionSync: Boolean, callbackContext: CallbackContext) {
         val key = publishableKey ?: ""
         if (key.isEmpty()) {
             callbackContext.error("Expected a non-empty publishableKey string argument.")
@@ -227,16 +238,29 @@ class Echo : CordovaPlugin() {
         }
         cordova.threadPool.execute {
             try {
-                Log.d(TAG, "initializeClerk called with key length ${key.length}")
+                Log.d(TAG, "initializeClerk called with key length ${key.length}, sharedSessionSync=$enableSharedSessionSync")
                 val context = cordova.activity.applicationContext
-                Clerk.initialize(context, key)
+                val syncConfig = if (enableSharedSessionSync) {
+                    SharedSessionSyncConfig.enabled
+                } else {
+                    SharedSessionSyncConfig.disabled
+                }
+                val options = ClerkConfigurationOptions(
+                    sharedSessionSync = syncConfig
+                )
+                Clerk.initialize(
+                    context = context,
+                    publishableKey = key,
+                    options = options
+                )
                 val response = JSONObject()
                 response.put("status", "success")
                 response.put("message", "Clerk SDK initialized successfully.")
                 response.put("publishableKey", key)
+                response.put("sharedSessionSyncEnabled", enableSharedSessionSync)
                 response.put("platform", "android")
                 response.put("timestamp", System.currentTimeMillis())
-                Log.d(TAG, "initializeClerk success")
+                Log.d(TAG, "initializeClerk success with sharedSessionSync=$enableSharedSessionSync")
                 callbackContext.success(response)
             } catch (e: Throwable) {
                 Log.e(TAG, "initializeClerk failed", e)
@@ -246,6 +270,42 @@ class Echo : CordovaPlugin() {
                 response.put("error", e.toString())
                 response.put("platform", "android")
                 response.put("timestamp", System.currentTimeMillis())
+                callbackContext.error(response)
+            }
+        }
+    }
+
+    /**
+     * Reconcile and reload shared session state across sibling apps manually.
+     */
+    private fun reloadFromSharedStorage(callbackContext: CallbackContext) {
+        cordova.threadPool.execute {
+            Log.d(TAG, "reloadFromSharedStorage execution started")
+            val response = JSONObject()
+
+            val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
+            if (!isInit) {
+                Log.e(TAG, "reloadFromSharedStorage failed: Clerk SDK is not initialized")
+                response.put("status", "error")
+                response.put("message", "Clerk SDK is not initialized. Please call initializeClerk first.")
+                callbackContext.error(response)
+                return@execute
+            }
+
+            try {
+                runBlocking(Dispatchers.IO) {
+                    val stateChanged = Clerk.reloadFromSharedStorage()
+                    Log.d(TAG, "reloadFromSharedStorage completed, stateChanged=$stateChanged")
+                    response.put("status", "success")
+                    response.put("stateChanged", stateChanged)
+                    response.put("message", "Reloaded shared storage successfully.")
+                    callbackContext.success(response)
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "reloadFromSharedStorage exception", e)
+                response.put("status", "error")
+                response.put("message", "Failed to reload shared storage: ${e.message}")
+                response.put("error", e.toString())
                 callbackContext.error(response)
             }
         }
@@ -269,7 +329,10 @@ class Echo : CordovaPlugin() {
                 if (key.isNotEmpty()) {
                     try {
                         val context = cordova.activity.applicationContext
-                        Clerk.initialize(context, key)
+                        val options = ClerkConfigurationOptions(
+                            sharedSessionSync = SharedSessionSyncConfig.enabled
+                        )
+                        Clerk.initialize(context, key, options)
                         diagnostics.put("initialized", true)
                     } catch (e: Throwable) {
                         diagnostics.put("initialized", false)

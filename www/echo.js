@@ -72,19 +72,26 @@ var Echo = {
     },
 
     /**
-     * Initialize Clerk Android SDK with a publishable key
+     * Initialize Clerk Android SDK with a publishable key and optional Shared Session Sync flag
      * @param {string} publishableKey - Clerk Publishable Key
+     * @param {boolean} [enableSharedSessionSync=true] - Whether to enable shared session sync across trusted sibling apps
      * @param {function} successCallback - Callback returning JSON object on success
      * @param {function} errorCallback - Callback on error
      */
-    initializeClerk: function (publishableKey, successCallback, errorCallback) {
+    initializeClerk: function (publishableKey, enableSharedSessionSync, successCallback, errorCallback) {
+        if (typeof enableSharedSessionSync === 'function') {
+            errorCallback = successCallback;
+            successCallback = enableSharedSessionSync;
+            enableSharedSessionSync = true;
+        }
         if (typeof publishableKey !== 'string' || publishableKey.trim() === '') {
             if (typeof errorCallback === 'function') {
                 errorCallback('Expected a non-empty publishableKey string argument.');
             }
             return;
         }
-        exec(successCallback, errorCallback, 'Echo', 'initializeClerk', [publishableKey]);
+        var syncEnabled = (typeof enableSharedSessionSync === 'boolean') ? enableSharedSessionSync : true;
+        exec(successCallback, errorCallback, 'Echo', 'initializeClerk', [publishableKey, syncEnabled]);
     },
 
     /**
@@ -126,6 +133,15 @@ var Echo = {
      */
     getCurrentUser: function (successCallback, errorCallback) {
         exec(successCallback, errorCallback, 'Echo', 'getCurrentUser', []);
+    },
+
+    /**
+     * Reconcile and reload shared session state across sibling apps manually
+     * @param {function} successCallback - Callback returning JSON object with stateChanged boolean
+     * @param {function} errorCallback - Callback returning error object
+     */
+    reloadFromSharedStorage: function (successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'Echo', 'reloadFromSharedStorage', []);
     },
 
     /**

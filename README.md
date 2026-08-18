@@ -186,6 +186,21 @@ cordova.plugins.echo.getCurrentUser(
 );
 ```
 
+### 9. `cordova.plugins.echo.reloadFromSharedStorage(successCallback, errorCallback)`
+
+Manually forces session reconciliation across trusted sibling apps on the same device.
+
+```javascript
+cordova.plugins.echo.reloadFromSharedStorage(
+    function(response) {
+        console.log("State Changed:", response.stateChanged); // true if sibling app changed session
+    },
+    function(error) {
+        console.error("Reload error:", error);
+    }
+);
+```
+
 ---
 
 ## ⚡ Integration with OutSystems Mobile Apps
