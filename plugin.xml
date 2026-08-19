@@ -45,4 +45,17 @@
         <source-file src="src/android/org/apache/cordova/plugin/echo/Echo.kt" target-dir="app/src/main/kotlin/org/apache/cordova/plugin/echo" />
     </platform>
 
+    <!-- iOS Platform -->
+    <platform name="ios">
+        <config-file target="config.xml" parent="/*">
+            <feature name="Echo">
+                <param name="ios-package" value="EchoPlugin" />
+            </feature>
+            <preference name="UseSwiftLanguageVersion" value="5" />
+        </config-file>
+
+        <!-- Source Files -->
+        <source-file src="src/ios/EchoPlugin.swift" />
+    </platform>
+
 </plugin>
