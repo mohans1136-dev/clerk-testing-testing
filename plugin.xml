@@ -47,8 +47,8 @@
 
     <!-- iOS Platform -->
     <platform name="ios">
-        <preference name="SwiftVersion" value="5.0" />
-        <preference name="UseSwiftLanguageVersion" value="5.0" />
+        <preference name="SwiftVersion" default="5.0" />
+        <preference name="UseSwiftLanguageVersion" default="5.0" />
 
         <config-file target="config.xml" parent="/*">
             <feature name="Echo">
