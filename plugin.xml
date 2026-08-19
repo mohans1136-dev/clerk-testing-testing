@@ -58,7 +58,8 @@
             <preference name="UseSwiftLanguageVersion" value="5.0" />
         </config-file>
 
-        <!-- Source Files -->
+        <!-- Source & Header Files -->
+        <header-file src="src/ios/EchoPlugin-Bridging-Header.h" />
         <source-file src="src/ios/EchoPlugin.swift" />
     </platform>
 

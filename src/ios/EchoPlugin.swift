@@ -1,5 +1,4 @@
 import Foundation
-import Cordova
 
 /**
  * Echo Cordova Plugin implemented in Swift for iOS.
