@@ -58,6 +58,9 @@
             <preference name="UseSwiftLanguageVersion" value="5.0" />
         </config-file>
 
+        <!-- Dependencies -->
+        <framework src="Clerk" type="podspec" spec="~> 0.5.0" />
+
         <!-- Source & Header Files -->
         <header-file src="src/ios/EchoPlugin-Bridging-Header.h" type="BridgingHeader" />
         <source-file src="src/ios/EchoPlugin.swift" />
