@@ -69,6 +69,16 @@
             </array>
         </config-file>
 
+        <!-- Dependencies -->
+        <podspec>
+            <config>
+                <source url="https://cdn.cocoapods.org/"/>
+            </config>
+            <pods use-frameworks="true">
+                <pod name="ClerkSDK" git="https://github.com/clerk/clerk-ios.git" />
+            </pods>
+        </podspec>
+
         <!-- Source & Header Files -->
         <header-file src="src/ios/EchoPlugin-Bridging-Header.h" type="BridgingHeader" />
         <source-file src="src/ios/EchoPlugin.swift" />
