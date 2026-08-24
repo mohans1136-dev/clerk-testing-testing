@@ -58,6 +58,17 @@
             <preference name="UseSwiftLanguageVersion" value="5.0" />
         </config-file>
 
+        <config-file target="*-Debug.plist" parent="com.apple.developer.associated-domains">
+            <array>
+                <string>webcredentials:fun-sole-57.clerk.accounts.dev</string>
+            </array>
+        </config-file>
+        <config-file target="*-Release.plist" parent="com.apple.developer.associated-domains">
+            <array>
+                <string>webcredentials:fun-sole-57.clerk.accounts.dev</string>
+            </array>
+        </config-file>
+
         <!-- Source & Header Files -->
         <header-file src="src/ios/EchoPlugin-Bridging-Header.h" type="BridgingHeader" />
         <source-file src="src/ios/EchoPlugin.swift" />
