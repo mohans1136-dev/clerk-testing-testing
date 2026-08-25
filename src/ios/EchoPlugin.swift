@@ -1,70 +1,40 @@
 import Foundation
 import Security
-import WebKit
 
 /**
- * Echo Cordova Plugin implemented in Swift for iOS with Native Clerk REST API & Cross-App Shared Session Storage.
+ * Echo Cordova Plugin implemented in Swift for iOS with Real Native Clerk Authentication & Shared Keychain Session Engine.
  */
 @objc(EchoPlugin)
 class EchoPlugin : CDVPlugin {
 
     private static let TAG = "EchoPlugin"
-    private static let KEYCHAIN_SERVICE = "org.luvelo.clerk.session"
-    private static let KEYCHAIN_ACCOUNT_KEY = "active_session_token"
+    private static let SHARED_KEYCHAIN_SERVICE = "com.luvelo.clerk.sharedservice"
+    private static let KEYCHAIN_ACCOUNT_KEY = "active_clerk_session_jwt"
+    private static let KEYCHAIN_SESSION_ID_KEY = "active_clerk_session_id"
     private static let KEYCHAIN_PUBLISHABLE_KEY = "clerk_publishable_key"
-    private static let SHARED_SUITE_NAME = "group.org.luvelo.clerk"
 
     private var inMemoryPublishableKey: String = ""
 
-    // MARK: - Multi-Layered Shared Session Storage (Keychain + Shared UserDefaults + HTTPCookieStorage)
+    // MARK: - Explicit Keychain Access (Shared Across Sibling iOS Apps)
 
     private func saveToKeychain(key: String, value: String) {
         guard let data = value.data(using: .utf8) else { return }
-
-        // 1. iOS Keychain Storage
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: EchoPlugin.KEYCHAIN_SERVICE,
-            kSecAttrAccount as String: key
+            kSecAttrService as String: EchoPlugin.SHARED_KEYCHAIN_SERVICE,
+            kSecAttrAccount as String: key,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
         SecItemDelete(query as CFDictionary)
         var newQuery = query
         newQuery[kSecValueData as String] = data
         SecItemAdd(newQuery as CFDictionary, nil)
-
-        // 2. Shared App Group & Standard UserDefaults
-        if let sharedDefaults = UserDefaults(suiteName: EchoPlugin.SHARED_SUITE_NAME) {
-            sharedDefaults.set(value, forKey: key)
-            sharedDefaults.synchronize()
-        }
-        UserDefaults.standard.set(value, forKey: key)
-        UserDefaults.standard.synchronize()
-
-        // 3. Shared HTTPCookieStorage
-        if key == EchoPlugin.KEYCHAIN_ACCOUNT_KEY {
-            let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
-            let host = self.getFrontendApiHost(publishableKey: pk)
-            var cookieProperties: [HTTPCookiePropertyKey: Any] = [
-                .name: "__session",
-                .value: value,
-                .domain: host,
-                .path: "/",
-                .secure: "TRUE"
-            ]
-            if let cookie = HTTPCookie(properties: cookieProperties) {
-                HTTPCookieStorage.shared.setCookie(cookie)
-                DispatchQueue.main.async {
-                    WKWebsiteDataStore.default().httpCookieStore.setCookie(cookie)
-                }
-            }
-        }
     }
 
     private func loadFromKeychain(key: String) -> String? {
-        // Layer 1: iOS Keychain
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: EchoPlugin.KEYCHAIN_SERVICE,
+            kSecAttrService as String: EchoPlugin.SHARED_KEYCHAIN_SERVICE,
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
@@ -74,62 +44,16 @@ class EchoPlugin : CDVPlugin {
         if status == errSecSuccess, let data = dataTypeRef as? Data, let str = String(data: data, encoding: .utf8), !str.isEmpty {
             return str
         }
-
-        // Layer 2: Shared App Group UserDefaults
-        if let sharedDefaults = UserDefaults(suiteName: EchoPlugin.SHARED_SUITE_NAME),
-           let str = sharedDefaults.string(forKey: key), !str.isEmpty {
-            return str
-        }
-
-        // Layer 3: Standard UserDefaults
-        if let str = UserDefaults.standard.string(forKey: key), !str.isEmpty {
-            return str
-        }
-
-        // Layer 4: Shared HTTPCookieStorage
-        if key == EchoPlugin.KEYCHAIN_ACCOUNT_KEY {
-            if let cookies = HTTPCookieStorage.shared.cookies {
-                for cookie in cookies {
-                    if cookie.name == "__session" && !cookie.value.isEmpty {
-                        return cookie.value
-                    }
-                }
-            }
-        }
-
         return nil
     }
 
     private func deleteFromKeychain(key: String) {
-        // Clear Keychain
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: EchoPlugin.KEYCHAIN_SERVICE,
+            kSecAttrService as String: EchoPlugin.SHARED_KEYCHAIN_SERVICE,
             kSecAttrAccount as String: key
         ]
         SecItemDelete(query as CFDictionary)
-
-        // Clear App Group & Standard UserDefaults
-        if let sharedDefaults = UserDefaults(suiteName: EchoPlugin.SHARED_SUITE_NAME) {
-            sharedDefaults.removeObject(forKey: key)
-            sharedDefaults.synchronize()
-        }
-        UserDefaults.standard.removeObject(forKey: key)
-        UserDefaults.standard.synchronize()
-
-        // Clear HTTPCookieStorage
-        if key == EchoPlugin.KEYCHAIN_ACCOUNT_KEY {
-            if let cookies = HTTPCookieStorage.shared.cookies {
-                for cookie in cookies {
-                    if cookie.name == "__session" {
-                        HTTPCookieStorage.shared.deleteCookie(cookie)
-                        DispatchQueue.main.async {
-                            WKWebsiteDataStore.default().httpCookieStore.delete(cookie)
-                        }
-                    }
-                }
-            }
-        }
     }
 
     private func getFrontendApiHost(publishableKey: String) -> String {
@@ -147,7 +71,7 @@ class EchoPlugin : CDVPlugin {
         return "fun-sole-57.clerk.accounts.dev"
     }
 
-    // MARK: - Cordova Plugin Methods
+    // MARK: - Plugin Actions
 
     @objc(echo:)
     func echo(command: CDVInvokedUrlCommand) {
@@ -212,7 +136,7 @@ class EchoPlugin : CDVPlugin {
                 "initialized": !keyToUse.isEmpty,
                 "status": "success",
                 "platform": "ios",
-                "message": !keyToUse.isEmpty ? "Clerk native iOS SDK bridge is ready and initialized with Shared Session Storage." : "Clerk native iOS SDK bridge is present.",
+                "message": !keyToUse.isEmpty ? "Clerk native iOS SDK bridge is ready and initialized." : "Clerk native iOS SDK bridge is present.",
                 "timestamp": Int64(Date().timeIntervalSince1970 * 1000)
             ]
             if !keyToUse.isEmpty {
@@ -275,8 +199,12 @@ class EchoPlugin : CDVPlugin {
 
             let semaphore = DispatchSemaphore(value: 0)
             var responseJson: [String: Any]?
+            var httpStatusCode: Int = 0
 
             let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                if let httpResp = response as? HTTPURLResponse {
+                    httpStatusCode = httpResp.statusCode
+                }
                 if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     responseJson = json
                 }
@@ -285,37 +213,73 @@ class EchoPlugin : CDVPlugin {
             task.resume()
             _ = semaphore.wait(timeout: .now() + 15.0)
 
-            if let json = responseJson, let responseObj = json["response"] as? [String: Any] {
-                let signInStatus = responseObj["status"] as? String ?? "COMPLETE"
-                let createdSessionId = responseObj["created_session_id"] as? String ?? "sess_ios_active_\(Int64(Date().timeIntervalSince1970))"
+            // Handle Errors from Clerk Server
+            if httpStatusCode >= 400 || (responseJson != nil && responseJson!["errors"] != nil) {
+                var errorMsg = "Sign in failed"
+                var errorCode = "authentication_failed"
+                if let json = responseJson, let errorsList = json["errors"] as? [[String: Any]], let firstErr = errorsList.first {
+                    errorMsg = firstErr["long_message"] as? String ?? (firstErr["message"] as? String ?? "Sign in failed")
+                    errorCode = firstErr["code"] as? String ?? "authentication_failed"
+                }
 
-                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: createdSessionId)
+                let response: [String: Any] = [
+                    "status": "error",
+                    "message": errorMsg,
+                    "errorCode": errorCode,
+                    "error": errorMsg,
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                return
+            }
+
+            // Handle Success from Clerk Server
+            if let json = responseJson, let clientObj = json["client"] as? [String: Any] {
+                var createdSessionId = ""
+                var jwtToken = ""
+
+                if let responseObj = json["response"] as? [String: Any] {
+                    createdSessionId = responseObj["created_session_id"] as? String ?? ""
+                }
+                if createdSessionId.isEmpty, let activeSessId = clientObj["active_session_id"] as? String {
+                    createdSessionId = activeSessId
+                }
+
+                if let sessionsList = clientObj["sessions"] as? [[String: Any]] {
+                    for sess in sessionsList {
+                        if let lastActiveToken = sess["last_active_token"] as? [String: Any], let jwt = lastActiveToken["jwt"] as? String {
+                            jwtToken = jwt
+                            break
+                        }
+                    }
+                }
+
+                if !createdSessionId.isEmpty {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: createdSessionId)
+                }
+                if !jwtToken.isEmpty {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: jwtToken)
+                } else if !createdSessionId.isEmpty {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: createdSessionId)
+                }
 
                 let response: [String: Any] = [
                     "status": "success",
                     "message": "Sign in successful",
                     "identifier": id,
-                    "signInId": responseObj["id"] as? String ?? "sia_ios",
-                    "signInStatus": signInStatus,
+                    "signInStatus": "COMPLETE",
                     "createdSessionId": createdSessionId,
                     "platform": "ios"
                 ]
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
             } else {
-                // Persistent session mode across apps
-                let sessionToken = "sess_shared_ios_\(id.replacingOccurrences(of: "@", with: "_").replacingOccurrences(of: ".", with: "_"))"
-                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: sessionToken)
-
                 let response: [String: Any] = [
-                    "status": "success",
-                    "message": "Sign in successful",
-                    "identifier": id,
-                    "signInId": "sia_shared_ios",
-                    "signInStatus": "COMPLETE",
-                    "createdSessionId": sessionToken,
+                    "status": "error",
+                    "message": "Unable to connect to Clerk authentication server.",
+                    "errorCode": "network_error",
                     "platform": "ios"
                 ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
             }
         })
     }
@@ -323,26 +287,88 @@ class EchoPlugin : CDVPlugin {
     @objc(getCurrentUser:)
     func getCurrentUser(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
-            let activeSessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY) ?? ""
-            let isSignedIn = !activeSessionId.isEmpty
+            let sessionToken = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY) ?? ""
+            let sessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY) ?? ""
 
-            var response: [String: Any] = [
-                "status": "success",
-                "isSignedIn": isSignedIn,
-                "platform": "ios"
-            ]
-
-            if isSignedIn {
-                response["sessionId"] = activeSessionId
-                response["userId"] = "user_ios_active"
-                response["firstName"] = "Clerk"
-                response["lastName"] = "User"
-                response["message"] = "Active shared user session retrieved on iOS."
-            } else {
-                response["message"] = "No active signed-in user session found."
+            if sessionToken.isEmpty {
+                let response: [String: Any] = [
+                    "status": "success",
+                    "isSignedIn": false,
+                    "message": "No active signed-in user session found.",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+                return
             }
 
-            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+            let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
+            let host = self.getFrontendApiHost(publishableKey: pk)
+
+            let url = URL(string: "https://\(host)/v1/client?_clerk_js_version=5.0.0")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            if !sessionToken.isEmpty {
+                request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+            } else if !pk.isEmpty {
+                request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+            }
+
+            let semaphore = DispatchSemaphore(value: 0)
+            var responseJson: [String: Any]?
+            var statusCode: Int = 0
+
+            let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                if let httpResp = response as? HTTPURLResponse {
+                    statusCode = httpResp.statusCode
+                }
+                if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    responseJson = json
+                }
+                semaphore.signal()
+            }
+            task.resume()
+            _ = semaphore.wait(timeout: .now() + 10.0)
+
+            if statusCode == 200, let json = responseJson, let clientObj = json["client"] as? [String: Any],
+               let sessionsList = clientObj["sessions"] as? [[String: Any]], let activeSession = sessionsList.first,
+               let userObj = activeSession["user"] as? [String: Any] {
+
+                let userId = userObj["id"] as? String ?? ""
+                let firstName = userObj["first_name"] as? String ?? ""
+                let lastName = userObj["last_name"] as? String ?? ""
+
+                let response: [String: Any] = [
+                    "status": "success",
+                    "isSignedIn": true,
+                    "userId": userId,
+                    "firstName": firstName,
+                    "lastName": lastName,
+                    "sessionId": sessionId.isEmpty ? (activeSession["id"] as? String ?? "") : sessionId,
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+            } else if statusCode == 401 {
+                self.deleteFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY)
+                self.deleteFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY)
+                let response: [String: Any] = [
+                    "status": "success",
+                    "isSignedIn": false,
+                    "message": "Session token expired or invalidated.",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+            } else {
+                // If offline but session token exists in shared keychain
+                let response: [String: Any] = [
+                    "status": "success",
+                    "isSignedIn": true,
+                    "userId": "user_shared_session",
+                    "sessionId": sessionId,
+                    "message": "Active shared session token present in iOS Keychain.",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+            }
         })
     }
 
@@ -350,6 +376,7 @@ class EchoPlugin : CDVPlugin {
     func signOut(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
             self.deleteFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY)
+            self.deleteFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY)
             let response: [String: Any] = [
                 "status": "success",
                 "message": "Signed out successfully",
@@ -362,12 +389,15 @@ class EchoPlugin : CDVPlugin {
     @objc(reloadFromSharedStorage:)
     func reloadFromSharedStorage(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
-            let activeSessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY) ?? ""
+            let activeSessionToken = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY) ?? ""
+            let activeSessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY) ?? ""
+            let hasSession = !activeSessionToken.isEmpty || !activeSessionId.isEmpty
+
             let response: [String: Any] = [
                 "status": "success",
-                "stateChanged": !activeSessionId.isEmpty,
+                "stateChanged": hasSession,
                 "sessionId": activeSessionId,
-                "message": !activeSessionId.isEmpty ? "Reloaded shared storage successfully. Active session found." : "Reloaded shared storage. No active session found.",
+                "message": hasSession ? "Reloaded shared Keychain storage. Active session found." : "Reloaded shared Keychain storage. No active session found.",
                 "platform": "ios"
             ]
             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
