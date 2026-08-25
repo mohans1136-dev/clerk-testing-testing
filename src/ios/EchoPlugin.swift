@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /**
- * Echo Cordova Plugin implemented in Swift for iOS with Real Native Clerk REST API & Shared Keychain Session Engine.
+ * Echo Cordova Plugin implemented in Swift for iOS with Native Clerk REST API & Shared Keychain Session Engine.
  */
 @objc(EchoPlugin)
 class EchoPlugin : CDVPlugin {
@@ -12,6 +12,7 @@ class EchoPlugin : CDVPlugin {
     private static let KEYCHAIN_ACCOUNT_KEY = "active_clerk_session_jwt"
     private static let KEYCHAIN_SESSION_ID_KEY = "active_clerk_session_id"
     private static let KEYCHAIN_PUBLISHABLE_KEY = "clerk_publishable_key"
+    private static let KEYCHAIN_DEV_BROWSER_JWT_KEY = "clerk_dev_browser_jwt"
 
     private var inMemoryPublishableKey: String = ""
 
@@ -54,6 +55,32 @@ class EchoPlugin : CDVPlugin {
             kSecAttrAccount as String: key
         ]
         SecItemDelete(query as CFDictionary)
+    }
+
+    private func extractAndSaveDevBrowserJwt(response: URLResponse?) {
+        guard let httpResp = response as? HTTPURLResponse else { return }
+        if let dbJwt = httpResp.value(forHTTPHeaderField: "Clerk-Db-Jwt") ?? httpResp.value(forHTTPHeaderField: "clerk-db-jwt"), !dbJwt.isEmpty {
+            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY, value: dbJwt)
+            return
+        }
+        if let allHeaders = httpResp.allHeaderFields as? [String: String] {
+            for (headerKey, headerVal) in allHeaders {
+                if headerKey.lowercased() == "clerk-db-jwt" && !headerVal.isEmpty {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY, value: headerVal)
+                    return
+                }
+                if headerKey.lowercased() == "set-cookie" && headerVal.contains("__clerk_db_jwt=") {
+                    let parts = headerVal.components(separatedBy: "__clerk_db_jwt=")
+                    if parts.count > 1 {
+                        let cookieVal = parts[1].components(separatedBy: ";").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        if !cookieVal.isEmpty {
+                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY, value: cookieVal)
+                            return
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func getFrontendApiHost(publishableKey: String) -> String {
@@ -194,7 +221,7 @@ class EchoPlugin : CDVPlugin {
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
             let host = self.getFrontendApiHost(publishableKey: pk)
 
-            guard let url = URL(string: "https://\(host)/v1/client/sign_ins?_clerk_js_version=5.0.0") else {
+            guard var urlComponents = URLComponents(string: "https://\(host)/v1/client/sign_ins") else {
                 let response: [String: Any] = [
                     "status": "error",
                     "message": "Invalid Clerk Frontend API URL for host: \(host)",
@@ -205,11 +232,25 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
+            var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
+            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
+            }
+            urlComponents.queryItems = queryItems
+
+            guard let url = urlComponents.url else {
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: ["status": "error", "message": "Failed to construct URL"]), callbackId: command.callbackId)
+                return
+            }
+
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             if !pk.isEmpty {
                 request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+            }
+            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
             }
 
             let bodyString = "identifier=\(id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id)&password=\(pass.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pass)"
@@ -222,6 +263,7 @@ class EchoPlugin : CDVPlugin {
 
             let task = URLSession.shared.dataTask(with: request) { data, response, error in
                 networkError = error
+                self.extractAndSaveDevBrowserJwt(response: response)
                 if let httpResp = response as? HTTPURLResponse {
                     httpStatusCode = httpResp.statusCode
                 }
@@ -333,7 +375,7 @@ class EchoPlugin : CDVPlugin {
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
             let host = self.getFrontendApiHost(publishableKey: pk)
 
-            guard let url = URL(string: "https://\(host)/v1/client?_clerk_js_version=5.0.0") else {
+            guard var urlComponents = URLComponents(string: "https://\(host)/v1/client") else {
                 let response: [String: Any] = [
                     "status": "success",
                     "isSignedIn": true,
@@ -345,6 +387,17 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
+            var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
+            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
+            }
+            urlComponents.queryItems = queryItems
+
+            guard let url = urlComponents.url else {
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: ["status": "error", "message": "Failed to construct URL"]), callbackId: command.callbackId)
+                return
+            }
+
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
             if !sessionToken.isEmpty {
@@ -352,12 +405,16 @@ class EchoPlugin : CDVPlugin {
             } else if !pk.isEmpty {
                 request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
             }
+            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+            }
 
             let semaphore = DispatchSemaphore(value: 0)
             var responseJson: [String: Any]?
             var statusCode: Int = 0
 
             let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                self.extractAndSaveDevBrowserJwt(response: response)
                 if let httpResp = response as? HTTPURLResponse {
                     statusCode = httpResp.statusCode
                 }
@@ -369,7 +426,7 @@ class EchoPlugin : CDVPlugin {
             task.resume()
             _ = semaphore.wait(timeout: .now() + 10.0)
 
-            if statusCode == 200, let json = responseJson, let clientObj = json["client"] as? [String: Any],
+            if (statusCode == 200 || statusCode == 304), let json = responseJson, let clientObj = json["client"] as? [String: Any],
                let sessionsList = clientObj["sessions"] as? [[String: Any]], let activeSession = sessionsList.first,
                let userObj = activeSession["user"] as? [String: Any] {
 
@@ -468,8 +525,10 @@ class EchoPlugin : CDVPlugin {
             var responseCode = -1
 
             let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                self.extractAndSaveDevBrowserJwt(response: response)
                 if let httpResp = response as? HTTPURLResponse {
                     responseCode = httpResp.statusCode
+                    networkReachable = (responseCode > 0)
                 }
                 semaphore.signal()
             }
