@@ -208,7 +208,6 @@ class EchoPlugin : CDVPlugin {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            request.setValue("https://\(host)", forHTTPHeaderField: "Origin")
             if !pk.isEmpty {
                 request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
             }
@@ -348,7 +347,6 @@ class EchoPlugin : CDVPlugin {
 
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
-            request.setValue("https://\(host)", forHTTPHeaderField: "Origin")
             if !sessionToken.isEmpty {
                 request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
             } else if !pk.isEmpty {
