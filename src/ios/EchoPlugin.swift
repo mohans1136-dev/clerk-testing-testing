@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /**
- * Echo Cordova Plugin implemented in Swift for iOS with Real Native Clerk Authentication & Shared Keychain Session Engine.
+ * Echo Cordova Plugin implemented in Swift for iOS with Real Native Clerk REST API & Shared Keychain Session Engine.
  */
 @objc(EchoPlugin)
 class EchoPlugin : CDVPlugin {
@@ -61,10 +61,18 @@ class EchoPlugin : CDVPlugin {
         if key.contains("_") {
             let parts = key.components(separatedBy: "_")
             if parts.count >= 3 {
-                let encodedHost = parts[2]
-                if let data = Data(base64Encoded: encodedHost + "==") ?? Data(base64Encoded: encodedHost + "=") ?? Data(base64Encoded: encodedHost),
+                let encodedHost = parts[2].replacingOccurrences(of: "$", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                var base64 = encodedHost
+                let remainder = base64.count % 4
+                if remainder > 0 {
+                    base64 += String(repeating: "=", count: 4 - remainder)
+                }
+                if let data = Data(base64Encoded: base64),
                    let decodedHost = String(data: data, encoding: .utf8), !decodedHost.isEmpty {
-                    return decodedHost
+                    let cleaned = decodedHost.replacingOccurrences(of: "$", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !cleaned.isEmpty {
+                        return cleaned
+                    }
                 }
             }
         }
@@ -186,10 +194,21 @@ class EchoPlugin : CDVPlugin {
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
             let host = self.getFrontendApiHost(publishableKey: pk)
 
-            let url = URL(string: "https://\(host)/v1/client/sign_ins?_clerk_js_version=5.0.0")!
+            guard let url = URL(string: "https://\(host)/v1/client/sign_ins?_clerk_js_version=5.0.0") else {
+                let response: [String: Any] = [
+                    "status": "error",
+                    "message": "Invalid Clerk Frontend API URL for host: \(host)",
+                    "errorCode": "invalid_url",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                return
+            }
+
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            request.setValue("https://\(host)", forHTTPHeaderField: "Origin")
             if !pk.isEmpty {
                 request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
             }
@@ -200,8 +219,10 @@ class EchoPlugin : CDVPlugin {
             let semaphore = DispatchSemaphore(value: 0)
             var responseJson: [String: Any]?
             var httpStatusCode: Int = 0
+            var networkError: Error?
 
             let task = URLSession.shared.dataTask(with: request) { data, response, error in
+                networkError = error
                 if let httpResp = response as? HTTPURLResponse {
                     httpStatusCode = httpResp.statusCode
                 }
@@ -213,14 +234,10 @@ class EchoPlugin : CDVPlugin {
             task.resume()
             _ = semaphore.wait(timeout: .now() + 15.0)
 
-            // Handle Errors from Clerk Server
-            if httpStatusCode >= 400 || (responseJson != nil && responseJson!["errors"] != nil) {
-                var errorMsg = "Sign in failed"
-                var errorCode = "authentication_failed"
-                if let json = responseJson, let errorsList = json["errors"] as? [[String: Any]], let firstErr = errorsList.first {
-                    errorMsg = firstErr["long_message"] as? String ?? (firstErr["message"] as? String ?? "Sign in failed")
-                    errorCode = firstErr["code"] as? String ?? "authentication_failed"
-                }
+            // 1. Handle HTTP / Clerk API Errors
+            if let json = responseJson, let errorsList = json["errors"] as? [[String: Any]], let firstErr = errorsList.first {
+                let errorMsg = firstErr["long_message"] as? String ?? (firstErr["message"] as? String ?? "Sign in failed")
+                let errorCode = firstErr["code"] as? String ?? "authentication_failed"
 
                 let response: [String: Any] = [
                     "status": "error",
@@ -233,7 +250,19 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
-            // Handle Success from Clerk Server
+            // 2. Handle Network Transport Failure
+            if let netErr = networkError {
+                let response: [String: Any] = [
+                    "status": "error",
+                    "message": "Network error connecting to \(host): \(netErr.localizedDescription)",
+                    "errorCode": "network_error",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                return
+            }
+
+            // 3. Handle Success from Clerk Server
             if let json = responseJson, let clientObj = json["client"] as? [String: Any] {
                 var createdSessionId = ""
                 var jwtToken = ""
@@ -273,10 +302,11 @@ class EchoPlugin : CDVPlugin {
                 ]
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
             } else {
+                let statusText = httpStatusCode > 0 ? "HTTP \(httpStatusCode)" : "No Response"
                 let response: [String: Any] = [
                     "status": "error",
-                    "message": "Unable to connect to Clerk authentication server.",
-                    "errorCode": "network_error",
+                    "message": "Unable to authenticate with Clerk server (\(statusText)). Please check publishable key and internet connection.",
+                    "errorCode": "connection_failed",
                     "platform": "ios"
                 ]
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
@@ -304,9 +334,21 @@ class EchoPlugin : CDVPlugin {
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
             let host = self.getFrontendApiHost(publishableKey: pk)
 
-            let url = URL(string: "https://\(host)/v1/client?_clerk_js_version=5.0.0")!
+            guard let url = URL(string: "https://\(host)/v1/client?_clerk_js_version=5.0.0") else {
+                let response: [String: Any] = [
+                    "status": "success",
+                    "isSignedIn": true,
+                    "userId": "user_shared_session",
+                    "sessionId": sessionId,
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+                return
+            }
+
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
+            request.setValue("https://\(host)", forHTTPHeaderField: "Origin")
             if !sessionToken.isEmpty {
                 request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
             } else if !pk.isEmpty {
@@ -358,7 +400,6 @@ class EchoPlugin : CDVPlugin {
                 ]
                 self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
             } else {
-                // If offline but session token exists in shared keychain
                 let response: [String: Any] = [
                     "status": "success",
                     "isSignedIn": true,
@@ -429,9 +470,8 @@ class EchoPlugin : CDVPlugin {
             var responseCode = -1
 
             let task = URLSession.shared.dataTask(with: request) { data, response, error in
-                if let httpResponse = response as? HTTPURLResponse {
-                    responseCode = httpResponse.statusCode
-                    networkReachable = (responseCode > 0)
+                if let httpResp = response as? HTTPURLResponse {
+                    responseCode = httpResp.statusCode
                 }
                 semaphore.signal()
             }
