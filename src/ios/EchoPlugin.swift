@@ -83,7 +83,7 @@ class EchoPlugin : CDVPlugin {
         }
     }
 
-    private func getFrontendApiHost(publishableKey: String) -> String {
+    private func getFrontendApiHost(publishableKey: String) -> String? {
         let key = publishableKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if key.contains("_") {
             let parts = key.components(separatedBy: "_")
@@ -103,7 +103,13 @@ class EchoPlugin : CDVPlugin {
                 }
             }
         }
-        return "fun-sole-57.clerk.accounts.dev"
+        return nil
+    }
+
+    private func urlFormEncode(_ string: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=#?")
+        return string.addingPercentEncoding(withAllowedCharacters: allowed) ?? string
     }
 
     // MARK: - Plugin Actions
@@ -219,7 +225,17 @@ class EchoPlugin : CDVPlugin {
             let id = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
             let pass = password.trimmingCharacters(in: .whitespacesAndNewlines)
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
-            let host = self.getFrontendApiHost(publishableKey: pk)
+
+            guard let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty else {
+                let response: [String: Any] = [
+                    "status": "error",
+                    "message": "Clerk SDK is not initialized. Please call initializeClerk(publishableKey) first.",
+                    "errorCode": "clerk_not_initialized",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                return
+            }
 
             guard var urlComponents = URLComponents(string: "https://\(host)/v1/client/sign_ins") else {
                 let response: [String: Any] = [
@@ -253,7 +269,7 @@ class EchoPlugin : CDVPlugin {
                 request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
             }
 
-            let bodyString = "identifier=\(id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id)&password=\(pass.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pass)"
+            let bodyString = "identifier=\(self.urlFormEncode(id))&password=\(self.urlFormEncode(pass))"
             request.httpBody = bodyString.data(using: .utf8)
 
             let semaphore = DispatchSemaphore(value: 0)
