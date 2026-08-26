@@ -85,31 +85,34 @@ class EchoPlugin : CDVPlugin {
 
     private func getFrontendApiHost(publishableKey: String) -> String? {
         let key = publishableKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if key.contains("_") {
-            let parts = key.components(separatedBy: "_")
-            if parts.count >= 3 {
-                let encodedHost = parts[2].replacingOccurrences(of: "$", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                var base64 = encodedHost
-                let remainder = base64.count % 4
-                if remainder > 0 {
-                    base64 += String(repeating: "=", count: 4 - remainder)
-                }
-                if let data = Data(base64Encoded: base64),
-                   let decodedHost = String(data: data, encoding: .utf8), !decodedHost.isEmpty {
-                    let cleaned = decodedHost.replacingOccurrences(of: "$", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !cleaned.isEmpty {
-                        return cleaned
-                    }
-                }
+        guard !key.isEmpty, key.contains("_") else { return nil }
+
+        let parts = key.components(separatedBy: "_")
+        guard parts.count >= 3 else { return nil }
+
+        let rawBase64 = parts.dropFirst(2).joined(separator: "_")
+            .replacingOccurrences(of: "$", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var base64 = rawBase64
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+
+        let remainder = base64.count % 4
+        if remainder > 0 {
+            base64 += String(repeating: "=", count: 4 - remainder)
+        }
+
+        if let data = Data(base64Encoded: base64),
+           let decodedHost = String(data: data, encoding: .utf8) {
+            let cleaned = decodedHost.replacingOccurrences(of: "$", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty {
+                return cleaned
             }
         }
-        return nil
-    }
 
-    private func urlFormEncode(_ string: String) -> String {
-        var allowed = CharacterSet.urlQueryAllowed
-        allowed.remove(charactersIn: "+&=#?")
-        return string.addingPercentEncoding(withAllowedCharacters: allowed) ?? string
+        return nil
     }
 
     // MARK: - Plugin Actions
@@ -225,11 +228,10 @@ class EchoPlugin : CDVPlugin {
             let id = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
             let pass = password.trimmingCharacters(in: .whitespacesAndNewlines)
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
-
             guard let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty else {
                 let response: [String: Any] = [
                     "status": "error",
-                    "message": "Clerk SDK is not initialized. Please call initializeClerk(publishableKey) first.",
+                    "message": "Clerk publishable key is missing or invalid. Please call initializeClerk(publishableKey) first.",
                     "errorCode": "clerk_not_initialized",
                     "platform": "ios"
                 ]
@@ -269,7 +271,7 @@ class EchoPlugin : CDVPlugin {
                 request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
             }
 
-            let bodyString = "identifier=\(self.urlFormEncode(id))&password=\(self.urlFormEncode(pass))"
+            let bodyString = "identifier=\(id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id)&password=\(pass.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pass)"
             request.httpBody = bodyString.data(using: .utf8)
 
             let semaphore = DispatchSemaphore(value: 0)
@@ -389,7 +391,16 @@ class EchoPlugin : CDVPlugin {
             }
 
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
-            let host = self.getFrontendApiHost(publishableKey: pk)
+            guard let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty else {
+                let response: [String: Any] = [
+                    "status": "success",
+                    "isSignedIn": false,
+                    "message": "Clerk publishable key is missing or invalid.",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+                return
+            }
 
             guard var urlComponents = URLComponents(string: "https://\(host)/v1/client") else {
                 let response: [String: Any] = [
