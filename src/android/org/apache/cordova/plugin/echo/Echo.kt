@@ -81,6 +81,10 @@ class Echo : CordovaPlugin() {
                 this.testConnection(publishableKey, callbackContext)
                 true
             }
+            "getKeychainAccessGroup" -> {
+                this.getKeychainAccessGroup(callbackContext)
+                true
+            }
             else -> false
         }
     }
@@ -570,6 +574,16 @@ class Echo : CordovaPlugin() {
                 response.put("error", e.toString())
                 callbackContext.error(response)
             }
+        }
+    }
+
+    private fun getKeychainAccessGroup(callbackContext: CallbackContext) {
+        cordova.threadPool.execute {
+            val response = JSONObject()
+            response.put("status", "success")
+            response.put("accessGroup", "org.luvelo.dev.shared")
+            response.put("platform", "android")
+            callbackContext.success(response)
         }
     }
 }

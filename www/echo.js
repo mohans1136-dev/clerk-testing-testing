@@ -158,6 +158,15 @@ var Echo = {
         }
         var key = (typeof publishableKey === 'string') ? publishableKey : '';
         exec(successCallback, errorCallback, 'Echo', 'testConnection', [key]);
+    },
+
+    /**
+     * Query configured Keychain / Storage Access Group name for session sharing
+     * @param {function} successCallback - Callback returning JSON object with accessGroup
+     * @param {function} errorCallback - Callback returning JSON error object
+     */
+    getKeychainAccessGroup: function (successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'Echo', 'getKeychainAccessGroup', []);
     }
 };
 

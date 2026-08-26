@@ -547,4 +547,17 @@ class EchoPlugin : CDVPlugin {
             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
         })
     }
+
+    @objc(getKeychainAccessGroup:)
+    func getKeychainAccessGroup(command: CDVInvokedUrlCommand) {
+        self.commandDelegate!.run(inBackground: {
+            let response: [String: Any] = [
+                "status": "success",
+                "accessGroup": "org.luvelo.dev.shared",
+                "service": EchoPlugin.SHARED_KEYCHAIN_SERVICE,
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+        })
+    }
 }
