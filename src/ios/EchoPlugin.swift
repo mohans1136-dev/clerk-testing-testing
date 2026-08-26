@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import WebKit
 
 /**
  * Echo Cordova Plugin implemented in Swift for iOS with Native Clerk REST API & Shared Keychain Session Engine.
@@ -16,7 +17,21 @@ class EchoPlugin : CDVPlugin {
 
     private var inMemoryPublishableKey: String = ""
 
-    // MARK: - Explicit Keychain Access (Shared Across Sibling iOS Apps)
+    // MARK: - Explicit Keychain & Cookie Cleaning
+
+    private func purgeAllClerkCookies() {
+        self.deleteFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY)
+        if let cookies = HTTPCookieStorage.shared.cookies {
+            for cookie in cookies {
+                HTTPCookieStorage.shared.deleteCookie(cookie)
+            }
+        }
+        DispatchQueue.main.async {
+            let dataStore = WKWebsiteDataStore.default()
+            let types = WKWebsiteDataStore.allWebsiteDataTypes()
+            dataStore.removeData(ofTypes: types, modifiedSince: Date(timeIntervalSince1970: 0), completionHandler: {})
+        }
+    }
 
     private func saveToKeychain(key: String, value: String) {
         guard let data = value.data(using: .utf8) else { return }
@@ -216,6 +231,129 @@ class EchoPlugin : CDVPlugin {
         })
     }
 
+    private func executeSignIn(id: String, pass: String, pk: String, host: String, isRetry: Bool, completion: @escaping ([String: Any]?, Int, Error?) -> Void) {
+        guard var urlComponents = URLComponents(string: "https://\(host)/v1/client/sign_ins") else {
+            completion(["status": "error", "message": "Invalid Clerk Frontend API URL for host: \(host)", "errorCode": "invalid_url"], 0, nil)
+            return
+        }
+
+        var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
+        if !isRetry, let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+            queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
+        }
+        urlComponents.queryItems = queryItems
+
+        guard let url = urlComponents.url else {
+            completion(["status": "error", "message": "Failed to construct URL"], 0, nil)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        if !pk.isEmpty {
+            request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+        }
+        if !isRetry, let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+            request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+        }
+
+        let encodedId = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id
+        let encodedPass = pass.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pass
+        let bodyString = "strategy=password&identifier=\(encodedId)&password=\(encodedPass)"
+        request.httpBody = bodyString.data(using: .utf8)
+
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            self.extractAndSaveDevBrowserJwt(response: response)
+            var statusCode = 0
+            if let httpResp = response as? HTTPURLResponse {
+                statusCode = httpResp.statusCode
+            }
+            var responseJson: [String: Any]?
+            if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                responseJson = json
+            }
+            completion(responseJson, statusCode, error)
+        }
+        task.resume()
+    }
+
+    private func processSignInResponse(json: [String: Any]?, statusCode: Int, netErr: Error?, host: String, id: String, command: CDVInvokedUrlCommand) {
+        if let json = json, let errorsList = json["errors"] as? [[String: Any]], let firstErr = errorsList.first {
+            let errorMsg = firstErr["long_message"] as? String ?? (firstErr["message"] as? String ?? "Sign in failed")
+            let errorCode = firstErr["code"] as? String ?? "authentication_failed"
+            let response: [String: Any] = [
+                "status": "error",
+                "message": errorMsg,
+                "errorCode": errorCode,
+                "error": errorMsg,
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+            return
+        }
+
+        if let netErr = netErr {
+            let response: [String: Any] = [
+                "status": "error",
+                "message": "Network error connecting to \(host): \(netErr.localizedDescription)",
+                "errorCode": "network_error",
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+            return
+        }
+
+        if let json = json, let clientObj = json["client"] as? [String: Any] {
+            var createdSessionId = ""
+            var jwtToken = ""
+
+            if let responseObj = json["response"] as? [String: Any] {
+                createdSessionId = responseObj["created_session_id"] as? String ?? ""
+            }
+            if createdSessionId.isEmpty, let activeSessId = clientObj["active_session_id"] as? String {
+                createdSessionId = activeSessId
+            }
+
+            if let sessionsList = clientObj["sessions"] as? [[String: Any]] {
+                for sess in sessionsList {
+                    if let lastActiveToken = sess["last_active_token"] as? [String: Any], let jwt = lastActiveToken["jwt"] as? String {
+                        jwtToken = jwt
+                        break
+                    }
+                }
+            }
+
+            if !createdSessionId.isEmpty {
+                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: createdSessionId)
+            }
+            if !jwtToken.isEmpty {
+                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: jwtToken)
+            } else if !createdSessionId.isEmpty {
+                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: createdSessionId)
+            }
+
+            let response: [String: Any] = [
+                "status": "success",
+                "message": "Sign in successful",
+                "identifier": id,
+                "signInStatus": "COMPLETE",
+                "createdSessionId": createdSessionId,
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
+        } else {
+            let statusText = statusCode > 0 ? "HTTP \(statusCode)" : "No Response"
+            let response: [String: Any] = [
+                "status": "error",
+                "message": "Unable to authenticate with Clerk server (\(statusText)). Please check publishable key and internet connection.",
+                "errorCode": "connection_failed",
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+        }
+    }
+
     @objc(signInWithPassword:)
     func signInWithPassword(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
@@ -239,138 +377,21 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
-            guard var urlComponents = URLComponents(string: "https://\(host)/v1/client/sign_ins") else {
-                let response: [String: Any] = [
-                    "status": "error",
-                    "message": "Invalid Clerk Frontend API URL for host: \(host)",
-                    "errorCode": "invalid_url",
-                    "platform": "ios"
-                ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
-                return
-            }
-
-            var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
-            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
-            }
-            urlComponents.queryItems = queryItems
-
-            guard let url = urlComponents.url else {
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: ["status": "error", "message": "Failed to construct URL"]), callbackId: command.callbackId)
-                return
-            }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            if !pk.isEmpty {
-                request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-            }
-            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
-            }
-
-            let encodedId = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id
-            let encodedPass = pass.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pass
-            let bodyString = "strategy=password&identifier=\(encodedId)&password=\(encodedPass)"
-            request.httpBody = bodyString.data(using: .utf8)
-
-            let semaphore = DispatchSemaphore(value: 0)
-            var responseJson: [String: Any]?
-            var httpStatusCode: Int = 0
-            var networkError: Error?
-
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
-                networkError = error
-                self.extractAndSaveDevBrowserJwt(response: response)
-                if let httpResp = response as? HTTPURLResponse {
-                    httpStatusCode = httpResp.statusCode
-                }
-                if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    responseJson = json
-                }
-                semaphore.signal()
-            }
-            task.resume()
-            _ = semaphore.wait(timeout: .now() + 15.0)
-
-            // 1. Handle HTTP / Clerk API Errors
-            if let json = responseJson, let errorsList = json["errors"] as? [[String: Any]], let firstErr = errorsList.first {
-                let errorMsg = firstErr["long_message"] as? String ?? (firstErr["message"] as? String ?? "Sign in failed")
-                let errorCode = firstErr["code"] as? String ?? "authentication_failed"
-
-                let response: [String: Any] = [
-                    "status": "error",
-                    "message": errorMsg,
-                    "errorCode": errorCode,
-                    "error": errorMsg,
-                    "platform": "ios"
-                ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
-                return
-            }
-
-            // 2. Handle Network Transport Failure
-            if let netErr = networkError {
-                let response: [String: Any] = [
-                    "status": "error",
-                    "message": "Network error connecting to \(host): \(netErr.localizedDescription)",
-                    "errorCode": "network_error",
-                    "platform": "ios"
-                ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
-                return
-            }
-
-            // 3. Handle Success from Clerk Server
-            if let json = responseJson, let clientObj = json["client"] as? [String: Any] {
-                var createdSessionId = ""
-                var jwtToken = ""
-
-                if let responseObj = json["response"] as? [String: Any] {
-                    createdSessionId = responseObj["created_session_id"] as? String ?? ""
-                }
-                if createdSessionId.isEmpty, let activeSessId = clientObj["active_session_id"] as? String {
-                    createdSessionId = activeSessId
-                }
-
-                if let sessionsList = clientObj["sessions"] as? [[String: Any]] {
-                    for sess in sessionsList {
-                        if let lastActiveToken = sess["last_active_token"] as? [String: Any], let jwt = lastActiveToken["jwt"] as? String {
-                            jwtToken = jwt
-                            break
+            self.executeSignIn(id: id, pass: pass, pk: pk, host: host, isRetry: false) { json, statusCode, netErr in
+                // Check if dev_browser_unauthenticated occurred
+                if let json = json, let errorsList = json["errors"] as? [[String: Any]], let firstErr = errorsList.first {
+                    let errorCode = firstErr["code"] as? String ?? ""
+                    if errorCode == "dev_browser_unauthenticated" {
+                        // Purge all stale Clerk cookies and dev browser token, then auto-retry with clean state
+                        self.purgeAllClerkCookies()
+                        self.executeSignIn(id: id, pass: pass, pk: pk, host: host, isRetry: true) { retryJson, retryStatus, retryErr in
+                            self.processSignInResponse(json: retryJson, statusCode: retryStatus, netErr: retryErr, host: host, id: id, command: command)
                         }
+                        return
                     }
                 }
 
-                if !createdSessionId.isEmpty {
-                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: createdSessionId)
-                }
-                if !jwtToken.isEmpty {
-                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: jwtToken)
-                } else if !createdSessionId.isEmpty {
-                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: createdSessionId)
-                }
-
-                let response: [String: Any] = [
-                    "status": "success",
-                    "message": "Sign in successful",
-                    "identifier": id,
-                    "signInStatus": "COMPLETE",
-                    "createdSessionId": createdSessionId,
-                    "platform": "ios"
-                ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
-            } else {
-                let statusText = httpStatusCode > 0 ? "HTTP \(httpStatusCode)" : "No Response"
-                let response: [String: Any] = [
-                    "status": "error",
-                    "message": "Unable to authenticate with Clerk server (\(statusText)). Please check publishable key and internet connection.",
-                    "errorCode": "connection_failed",
-                    "platform": "ios"
-                ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                self.processSignInResponse(json: json, statusCode: statusCode, netErr: netErr, host: host, id: id, command: command)
             }
         })
     }
@@ -500,8 +521,31 @@ class EchoPlugin : CDVPlugin {
     @objc(signOut:)
     func signOut(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
+            let sessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY) ?? ""
+            let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
+            let sessionToken = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY) ?? ""
+
+            // 1. Attempt server-side session revoke on Clerk
+            if !sessionId.isEmpty, let host = self.getFrontendApiHost(publishableKey: pk), let url = URL(string: "https://\(host)/v1/client/sessions/\(sessionId)/remove") {
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                if !sessionToken.isEmpty {
+                    req.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+                } else if !pk.isEmpty {
+                    req.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+                }
+                let sem = DispatchSemaphore(value: 0)
+                URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
+                _ = sem.wait(timeout: .now() + 3.0)
+            }
+
+            // 2. Delete all session & dev browser keys from Keychain
             self.deleteFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY)
             self.deleteFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY)
+
+            // 3. Purge all Clerk cookies and dev tokens
+            self.purgeAllClerkCookies()
+
             let response: [String: Any] = [
                 "status": "success",
                 "message": "Signed out successfully",
