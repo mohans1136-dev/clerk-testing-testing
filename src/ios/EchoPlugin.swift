@@ -271,7 +271,9 @@ class EchoPlugin : CDVPlugin {
                 request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
             }
 
-            let bodyString = "identifier=\(id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id)&password=\(pass.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pass)"
+            let encodedId = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id
+            let encodedPass = pass.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pass
+            let bodyString = "strategy=password&identifier=\(encodedId)&password=\(encodedPass)"
             request.httpBody = bodyString.data(using: .utf8)
 
             let semaphore = DispatchSemaphore(value: 0)
