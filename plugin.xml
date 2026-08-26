@@ -58,6 +58,25 @@
             <preference name="UseSwiftLanguageVersion" value="5.0" />
         </config-file>
 
+        <!-- Keychain Sharing Entitlements for OutSystems MABS Cloud Builds -->
+        <config-file target="**/Entitlements-Debug.plist" parent="keychain-access-groups">
+            <array>
+                <string>$(AppIdentifierPrefix)org.luvelo.dev.shared</string>
+            </array>
+        </config-file>
+
+        <config-file target="**/Entitlements-Release.plist" parent="keychain-access-groups">
+            <array>
+                <string>$(AppIdentifierPrefix)org.luvelo.dev.shared</string>
+            </array>
+        </config-file>
+
+        <config-file target="**/*.entitlements" parent="keychain-access-groups">
+            <array>
+                <string>$(AppIdentifierPrefix)org.luvelo.dev.shared</string>
+            </array>
+        </config-file>
+
         <!-- Source & Header Files -->
         <header-file src="src/ios/EchoPlugin-Bridging-Header.h" type="BridgingHeader" />
         <source-file src="src/ios/EchoPlugin.swift" />
