@@ -22,6 +22,7 @@ clerk-testing-testing/
 ├── package.json
 ├── plugin.xml                                # Cordova plugin manifest & iOS Keychain Entitlements
 ├── README.md                                 # Full documentation & OutSystems integration guide
+├── Android_Implementation.md                 # Full Android architecture & sequence diagrams
 ├── www/
 │   └── echo.js                               # JavaScript Bridge (window.echo & cordova.plugins.echo)
 └── src/
