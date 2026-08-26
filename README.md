@@ -1,149 +1,111 @@
-# Cordova Android Plugin in Kotlin (`cordova-plugin-echo`)
+# Cordova Clerk Authentication & Shared Session Plugin (`cordova-plugin-echo`)
 
-A simple Apache Cordova Android plugin written in **Kotlin**, based on the tutorial by Erisu (*The Web Tub*). This repository is structured for standard Cordova Mobile Applications as well as **OutSystems Mobile Applications**.
+A production-ready **Cross-Platform Apache Cordova Plugin** providing native **Clerk Authentication** and **Cross-App Session Sharing (Single Sign-On)** for **Android (Kotlin)** and **iOS (Swift)**, built specifically for **OutSystems Mobile Applications (MABS)** and standard Cordova projects.
+
+---
+
+## 🌟 Key Highlights & Capabilities
+
+- 🔐 **Native Clerk Authentication:** Full support for `initializeClerk`, `signInWithPassword`, `signOut`, and `getCurrentUser`.
+- 🔄 **Cross-App Session Sharing (SSO):**
+  - **Android:** Powered by Clerk Android SDK's `SharedSessionSyncConfig`.
+  - **iOS:** Powered by Apple **Keychain Sharing Access Groups** (`$(AppIdentifierPrefix)org.luvelo.dev.shared`) configured automatically for OutSystems MABS cloud builds.
+- 🛡️ **Dev Browser Cookie Auto-Healing:** Solves the iOS development instance `dev_browser_unauthenticated` error via automated cookie/token purging and transparent retries.
+- 📱 **OutSystems MABS 10+ Ready:** Supports Kotlin 2.0.21 on Android and Swift 5.0+ on iOS with zero Xcode or manual build steps required.
 
 ---
 
 ## 📁 Repository Structure
 
 ```
-echo-just-config/
+clerk-testing-testing/
 ├── package.json
-├── plugin.xml
+├── plugin.xml                                # Cordova plugin manifest & iOS Keychain Entitlements
+├── README.md                                 # Full documentation & OutSystems integration guide
 ├── www/
-│   └── echo.js
+│   └── echo.js                               # JavaScript Bridge (window.echo & cordova.plugins.echo)
 └── src/
-    └── android/
-        └── org/
-            └── apache/
-                └── cordova/
-                    └── plugin/
-                        └── echo/
-                            └── Echo.kt
+    ├── android/
+    │   ├── build-extras.gradle               # Kotlin & Gradle dependencies
+    │   └── org/apache/cordova/plugin/echo/
+    │       └── Echo.kt                       # Android Kotlin native engine (com.clerk:clerk-android-api)
+    └── ios/
+        ├── EchoPlugin-Bridging-Header.h      # Cordova Objective-C bridging header
+        └── EchoPlugin.swift                  # iOS Swift native engine (REST & Shared Keychain)
 ```
 
 ---
 
-## 🚀 Key Concepts: Kotlin in Cordova
+## ⚙️ OutSystems MABS Integration Guide
 
-Native Kotlin support was introduced in `cordova-android@9.0.0+`.
+### Step 1: Add Extensibility Configurations in OutSystems Service Studio
 
-In `plugin.xml`, Kotlin support is declared via the following `<preference>` tags inside `<config-file target="res/xml/config.xml">`:
+In your OutSystems Mobile / Reactive Application module:
+1. Open the **Module Properties** in Service Studio.
+2. Open **Extensibility Configurations**.
+3. Paste the following JSON configuration referencing this repository:
 
-```xml
-<preference name="GradlePluginKotlinEnabled" value="true" />
-<preference name="GradlePluginKotlinCodeStyle" value="official" />
-<preference name="GradlePluginKotlinVersion" value="1.9.24" />
+```json
+{
+    "plugin": {
+        "url": "https://github.com/mohans1136-dev/clerk-testing-testing.git"
+    }
+}
 ```
 
-This instructs the Cordova Android build system (and OutSystems MABS) to enable the Kotlin Gradle plugin during Android compilation.
+> [!TIP]
+> To lock the build to a specific commit hash, append the commit sha to the URL:  
+> `"url": "https://github.com/mohans1136-dev/clerk-testing-testing#ea9f3fd"`
 
 ---
 
-## 💻 API Reference
+### Step 2: iOS Keychain Sharing for Sibling Apps
 
-### 1. `cordova.plugins.echo.echo(phrase, successCallback, errorCallback)`
+Both sibling apps (e.g. `ClerkApp1` and `ClerkApp2`) must:
+1. Install this plugin (which applies the `$(AppIdentifierPrefix)org.luvelo.dev.shared` entitlement via `plugin.xml`).
+2. Be signed with the **same Apple Developer Team ID** during the MABS build.
 
-Executes a synchronous echo returning the string back.
+---
 
-```javascript
-cordova.plugins.echo.echo(
-    "Hello from OutSystems!",
-    function(result) {
-        console.log("Success:", result); // Output: "Hello from OutSystems!"
-    },
-    function(error) {
-        console.error("Error:", error);
-    }
-);
-```
+## 💻 Complete JavaScript API Reference
 
-### 2. `cordova.plugins.echo.echoAsync(phrase, successCallback, errorCallback)`
+All methods are available on both `cordova.plugins.echo` and `window.echo`.
 
-Executes an asynchronous echo using `cordova.threadPool`, returning a JSON payload.
+---
 
-```javascript
-cordova.plugins.echo.echoAsync(
-    "Hello Async!",
-    function(response) {
-        console.log("Status:", response.status);     // "success"
-        console.log("Message:", response.message);   // "Hello Async!"
-        console.log("Language:", response.language); // "Kotlin"
-        console.log("Timestamp:", response.timestamp);
-    },
-    function(error) {
-        console.error("Error:", error);
-    }
-);
-```
+### 1. `initializeClerk(publishableKey, enableSharedSessionSync, success, error)`
 
-### 3. `cordova.plugins.echo.add(num1, num2, successCallback, errorCallback)`
-
-Adds two numbers natively in Kotlin and returns a JSON payload containing `sum`, `num1`, and `num2`.
-
-```javascript
-cordova.plugins.echo.add(
-    15.5,
-    24.5,
-    function(response) {
-        console.log("Num1:", response.num1); // 15.5
-        console.log("Num2:", response.num2); // 24.5
-        console.log("Sum:", response.sum);   // 40
-    },
-    function(error) {
-        console.error("Error:", error);
-    }
-);
-```
-
-### 4. `cordova.plugins.echo.checkClerk(publishableKey, successCallback, errorCallback)`
-
-Checks whether the Clerk Android SDK (`com.clerk.api.Clerk`) is loaded on the Android runtime classpath and optionally initializes it if a `publishableKey` string is provided.
-
-```javascript
-cordova.plugins.echo.checkClerk(
-    "pk_test_...", // optional publishable key
-    function(response) {
-        console.log("SDK Available:", response.sdkAvailable); // true
-        console.log("Initialized:", response.initialized);   // true/false
-        console.log("Message:", response.message);
-    },
-    function(error) {
-        console.error("Clerk integration error:", error);
-    }
-);
-```
-
-### 5. `cordova.plugins.echo.initializeClerk(publishableKey, successCallback, errorCallback)`
-
-Initializes the Clerk Android SDK with the specified Clerk Publishable Key.
+Initializes the Clerk engine with your Publishable Key (`pk_test_...` or `pk_live_...`).
 
 ```javascript
 cordova.plugins.echo.initializeClerk(
-    "pk_test_...",
+    "pk_test_YOUR_CLERK_PUBLISHABLE_KEY",
+    true, // enableSharedSessionSync (Boolean)
     function(response) {
-        console.log("Status:", response.status);           // "success"
-        console.log("Message:", response.message);         // "Clerk SDK initialized successfully."
-        console.log("PublishableKey:", response.publishableKey);
+        console.log("Initialized successfully:", response.message);
+        console.log("Publishable Key:", response.publishableKey);
     },
     function(error) {
-        console.error("Initialization error:", error);
+        console.error("Initialization failed:", error);
     }
 );
 ```
 
-### 6. `cordova.plugins.echo.signInWithPassword(identifier, password, successCallback, errorCallback)`
+---
 
-Authenticates a user using email/username and password via Clerk SDK.
+### 2. `signInWithPassword(identifier, password, success, error)`
+
+Authenticates a user with email/username and password. Automatically stores the active session in shared storage/Keychain.
 
 ```javascript
 cordova.plugins.echo.signInWithPassword(
     "user@example.com",
-    "password123",
+    "securePassword123",
     function(response) {
-        console.log("Status:", response.status);               // "success"
-        console.log("Session ID:", response.createdSessionId);
-        console.log("Sign In ID:", response.signInId);
+        console.log("Sign In Status:", response.signInStatus); // "COMPLETE"
+        console.log("Created Session ID:", response.createdSessionId);
+        console.log("User ID:", response.userId);
+        console.log("First Name:", response.firstName);
     },
     function(error) {
         console.error("Sign in failed:", error.message || error);
@@ -151,190 +113,178 @@ cordova.plugins.echo.signInWithPassword(
 );
 ```
 
-### 7. `cordova.plugins.echo.signOut(successCallback, errorCallback)`
+---
 
-Signs out the active user session via Clerk SDK.
+### 3. `getCurrentUser(success, error)`
 
-```javascript
-cordova.plugins.echo.signOut(
-    function(response) {
-        console.log("Status:", response.status);   // "success"
-        console.log("Message:", response.message); // "Signed out successfully"
-    },
-    function(error) {
-        console.error("Sign out failed:", error);
-    }
-);
-```
-
-### 8. `cordova.plugins.echo.getCurrentUser(successCallback, errorCallback)`
-
-Retrieves the currently active user session status.
+Retrieves the currently authenticated user's session metadata and status.
 
 ```javascript
 cordova.plugins.echo.getCurrentUser(
     function(response) {
-        console.log("Is Signed In:", response.isSignedIn);
         if (response.isSignedIn) {
+            console.log("User is Signed In!");
             console.log("User ID:", response.userId);
+            console.log("First Name:", response.firstName);
+            console.log("Last Name:", response.lastName);
             console.log("Session ID:", response.sessionId);
+        } else {
+            console.log("User is Signed Out.");
         }
     },
     function(error) {
-        console.error("Error retrieving user status:", error);
+        console.error("Failed to query user session:", error);
     }
 );
 ```
 
-### 9. `cordova.plugins.echo.reloadFromSharedStorage(successCallback, errorCallback)`
+---
 
-Manually forces session reconciliation across trusted sibling apps on the same device.
+### 4. `signOut(success, error)`
+
+Terminates the active session, revokes the token on the Clerk server, and purges all local cookies/tokens.
+
+```javascript
+cordova.plugins.echo.signOut(
+    function(response) {
+        console.log("Sign Out Success:", response.message);
+    },
+    function(error) {
+        console.error("Sign Out failed:", error);
+    }
+);
+```
+
+---
+
+### 5. `reloadFromSharedStorage(success, error)`
+
+Reconciles and syncs session state from sibling apps that share the same keychain/storage group.
 
 ```javascript
 cordova.plugins.echo.reloadFromSharedStorage(
     function(response) {
-        console.log("State Changed:", response.stateChanged); // true if sibling app changed session
+        if (response.stateChanged) {
+            console.log("Active sibling session detected! Session ID:", response.sessionId);
+        } else {
+            console.log("No shared session state change.");
+        }
     },
     function(error) {
-        console.error("Reload error:", error);
+        console.error("Failed to reload shared storage:", error);
     }
 );
 ```
 
 ---
 
-## ⚡ Integration with OutSystems Mobile Apps
+### 6. `getKeychainAccessGroup(success, error)`
 
-To use this Kotlin plugin in OutSystems Reactive / Mobile Applications:
+Returns the configured Keychain / Storage group identifier (`org.luvelo.dev.shared`).
 
-### Step 1: Package the Plugin
-
-You can reference this plugin in OutSystems either via a Git URL or a ZIP package:
-
-- **Git Repository**: Push this directory to your Git server (e.g. `https://github.com/your-org/cordova-plugin-echo.git`).
-- **ZIP File**: Zip the contents of the `echo-just-config` directory and host it on an accessible HTTPS URL or upload it to OutSystems Resource assets.
-
-### Step 2: Add Extensibility Configurations in OutSystems Service Studio
-
-In your OutSystems Mobile Module:
-1. Open the Module Properties in Service Studio.
-2. Edit **Extensibility Configurations**.
-3. Add the JSON configuration referencing your plugin:
-
-#### Using Git URL:
-```json
-{
-    "plugin": {
-        "url": "https://github.com/your-org/cordova-plugin-echo.git"
+```javascript
+cordova.plugins.echo.getKeychainAccessGroup(
+    function(response) {
+        console.log("Access Group:", response.accessGroup);
+        console.log("Platform:", response.platform);
+    },
+    function(error) {
+        console.error("Failed to query access group:", error);
     }
-}
+);
 ```
 
-#### Using ZIP URL:
-```json
-{
-    "plugin": {
-        "url": "https://your-domain.com/plugins/cordova-plugin-echo.zip"
+---
+
+### 7. `checkClerk(publishableKey, success, error)`
+
+Checks if the Clerk engine is available on the native runtime.
+
+```javascript
+cordova.plugins.echo.checkClerk(
+    "pk_test_...", // optional
+    function(response) {
+        console.log("SDK Available:", response.sdkAvailable);
+        console.log("Initialized:", response.initialized);
+    },
+    function(error) {
+        console.error("Check Clerk error:", error);
     }
-}
+);
 ```
 
-### Step 3: Call the Plugin in OutSystems JavaScript Node
+---
 
-Inside a Client Action in Service Studio, add a **JavaScript Element**:
+### 8. `testConnection(publishableKey, success, error)`
+
+Runs a network diagnostic test to verify backend connectivity to `api.clerk.com`.
 
 ```javascript
-// Calling Echo
-if (window.cordova && window.cordova.plugins && window.cordova.plugins.echo) {
-    window.cordova.plugins.echo.echo(
-        $parameters.InputMessage,
-        function(result) {
-            $parameters.OutputMessage = result;
-            $parameters.Success = true;
-            $resolve();
-        },
-        function(error) {
-            $parameters.ErrorMessage = error;
-            $parameters.Success = false;
-            $resolve();
-        }
-    );
-} else {
-    $parameters.ErrorMessage = "Plugin not available on this platform/device.";
-    $parameters.Success = false;
-    $resolve();
-}
+cordova.plugins.echo.testConnection(
+    "pk_test_...", // optional
+    function(response) {
+        console.log("Diagnostic Status:", response.status);
+        console.log("Network Reachable:", response.diagnostics.networkReachable);
+        console.log("HTTP Code:", response.diagnostics.httpResponseCode);
+    },
+    function(error) {
+        console.error("Test connection failed:", error);
+    }
+);
 ```
 
-#### Calling Addition in OutSystems JavaScript Node:
+---
+
+### 9. Utility Methods: `echo`, `echoAsync`, `add`
+
+```javascript
+// Synchronous Echo
+cordova.plugins.echo.echo("Hello OutSystems", res => console.log(res), err => console.error(err));
+
+// Asynchronous Thread-Pool Echo
+cordova.plugins.echo.echoAsync("Hello Async", res => console.log(res.message), err => console.error(err));
+
+// Native Numeric Addition
+cordova.plugins.echo.add(10, 25, res => console.log("Sum:", res.sum), err => console.error(err));
+```
+
+---
+
+## 📱 OutSystems Client Action Example Node
+
+Here is the standard pattern to paste into an OutSystems **JavaScript Element** inside a Client Action:
 
 ```javascript
 if (window.cordova && window.cordova.plugins && window.cordova.plugins.echo) {
-    window.cordova.plugins.echo.add(
-        $parameters.Number1,
-        $parameters.Number2,
+    window.cordova.plugins.echo.getCurrentUser(
         function(response) {
-            $parameters.ResultSum = response.sum;
+            if (response.isSignedIn) {
+                $parameters.IsSignedIn = true;
+                $parameters.UserId = response.userId;
+                $parameters.FirstName = response.firstName;
+                $parameters.SessionId = response.sessionId;
+            } else {
+                $parameters.IsSignedIn = false;
+                $parameters.UserId = "";
+            }
             $parameters.Success = true;
             $resolve();
         },
         function(error) {
-            $parameters.ErrorMessage = error;
             $parameters.Success = false;
-            $resolve();
-        }
-    );
-} else {
-    $parameters.ErrorMessage = "Plugin not available on this platform/device.";
-    $parameters.Success = false;
-    $resolve();
-}
-```
-
-#### Checking Clerk Android Integration in OutSystems JavaScript Node:
-
-```javascript
-if (window.cordova && window.cordova.plugins && window.cordova.plugins.echo) {
-    window.cordova.plugins.echo.checkClerk(
-        $parameters.PublishableKey, // e.g. "pk_test_..." or empty string ""
-        function(response) {
-            $parameters.IsAvailable = response.sdkAvailable;
-            $parameters.IsInitialized = response.initialized;
-            $parameters.Message = response.message;
-            $parameters.Success = true;
-            $resolve();
-        },
-        function(error) {
             $parameters.ErrorMessage = typeof error === 'object' ? JSON.stringify(error) : error;
-            $parameters.Success = false;
             $resolve();
         }
     );
 } else {
-    $parameters.ErrorMessage = "Plugin not available on this platform/device.";
     $parameters.Success = false;
+    $parameters.ErrorMessage = "Clerk Echo plugin is not available on this device.";
     $resolve();
 }
 ```
 
 ---
 
-## 🛠️ Testing in Standard Cordova CLI
+## 📄 License
 
-1. Create a Cordova app:
-   ```bash
-   cordova create testApp com.example.testapp TestApp
-   cd testApp
-   cordova platform add android@12.0.0
-   ```
-
-2. Add this plugin from local path:
-   ```bash
-   cordova plugin add ../echo-just-config
-   ```
-
-3. Build and run:
-   ```bash
-   cordova run android
-   ```
-
+Apache License 2.0. See [LICENSE](LICENSE) for details.
