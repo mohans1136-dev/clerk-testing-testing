@@ -8,6 +8,7 @@ import android.util.Log
 import com.clerk.api.Clerk
 import com.clerk.api.ClerkConfigurationOptions
 import com.clerk.api.SharedSessionSyncConfig
+import com.clerk.api.auth.HostedAuthMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -56,6 +57,11 @@ class Echo : CordovaPlugin() {
                 val publishableKey = args.optString(0, "")
                 val enableSharedSessionSync = args.optBoolean(1, true)
                 this.initializeClerk(publishableKey, enableSharedSessionSync, callbackContext)
+                true
+            }
+            "startHostedAuth" -> {
+                val mode = args.optString(0, "sign_in")
+                this.startHostedAuth(mode, callbackContext)
                 true
             }
             "signInWithPassword" -> {
@@ -384,6 +390,111 @@ class Echo : CordovaPlugin() {
                 response.put("error", e.toString())
                 response.put("diagnostics", diagnostics)
                 callbackContext.error(response)
+            }
+        }
+    }
+
+    /**
+     * Start Hosted Authentication via Clerk Account Portal (in-app Custom Tab).
+     * Automatically supports Microsoft Enterprise SSO (OIDC), Google, Passwords, MFA, etc.
+     */
+    private fun startHostedAuth(mode: String?, callbackContext: CallbackContext) {
+        val authMode = if (mode.equals("sign_up", ignoreCase = true)) {
+            try {
+                HostedAuthMode.SIGN_UP
+            } catch (t: Throwable) {
+                null
+            }
+        } else {
+            try {
+                HostedAuthMode.SIGN_IN
+            } catch (t: Throwable) {
+                null
+            }
+        }
+
+        cordova.threadPool.execute {
+            Log.d(TAG, "startHostedAuth execution started with mode: $mode")
+            val response = JSONObject()
+
+            val isInit = try { Clerk.isInitialized.value } catch (t: Throwable) { false }
+            if (!isInit) {
+                Log.e(TAG, "startHostedAuth failed: Clerk SDK is not initialized")
+                response.put("status", "error")
+                response.put("message", "Clerk SDK is not initialized. Please call initializeClerk(publishableKey) first.")
+                callbackContext.error(response)
+                return@execute
+            }
+
+            try {
+                runBlocking(Dispatchers.IO) {
+                    val result = if (authMode != null) {
+                        Clerk.auth.startHostedAuth(mode = authMode)
+                    } else {
+                        Clerk.auth.startHostedAuth()
+                    }
+
+                    when (result) {
+                        is com.clerk.api.network.serialization.ClerkResult.Success -> {
+                            val session = result.value
+                            val activeSession = Clerk.auth.sessions.firstOrNull() ?: session
+                            val sessionId = try { activeSession.id } catch (t: Throwable) { "" }
+                            val user = try { activeSession.user } catch (t: Throwable) { null }
+
+                            Log.d(TAG, "startHostedAuth SUCCESS: sessionId=$sessionId, userId=${user?.id}")
+                            response.put("status", "success")
+                            response.put("message", "Hosted authentication successful")
+                            response.put("sessionId", sessionId)
+                            response.put("userId", user?.id ?: "")
+                            response.put("firstName", user?.firstName ?: "")
+                            response.put("lastName", user?.lastName ?: "")
+                            val email = try {
+                                user?.primaryEmailAddress?.emailAddress ?: ""
+                            } catch (t: Throwable) {
+                                ""
+                            }
+                            response.put("email", email)
+                            callbackContext.success(response)
+                        }
+                        is com.clerk.api.network.serialization.ClerkResult.Failure -> {
+                            val throwable = result.throwable
+                            val isCancelled = throwable?.javaClass?.simpleName?.contains("Cancellation", ignoreCase = true) == true
+                                || result.error?.toString()?.contains("cancel", ignoreCase = true) == true
+                                || throwable?.message?.contains("cancel", ignoreCase = true) == true
+
+                            if (isCancelled) {
+                                Log.i(TAG, "startHostedAuth CANCELLED by user")
+                                response.put("status", "cancelled")
+                                response.put("message", "User cancelled authentication")
+                                callbackContext.error(response)
+                            } else {
+                                val (errMessage, errCode) = extractClerkError(result)
+                                Log.e(TAG, "startHostedAuth FAILURE: $errMessage (code: $errCode)")
+                                response.put("status", "error")
+                                response.put("message", errMessage)
+                                response.put("errorCode", errCode)
+                                response.put("error", errMessage)
+                                callbackContext.error(response)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                val isCancelled = e.javaClass.simpleName.contains("Cancellation", ignoreCase = true)
+                    || e.message?.contains("cancel", ignoreCase = true) == true
+
+                if (isCancelled) {
+                    Log.i(TAG, "startHostedAuth CANCELLED by user (caught exception)")
+                    response.put("status", "cancelled")
+                    response.put("message", "User cancelled authentication")
+                    callbackContext.error(response)
+                } else {
+                    Log.e(TAG, "startHostedAuth Exception caught", e)
+                    response.put("status", "error")
+                    response.put("message", "Exception during hosted authentication: ${e.message}")
+                    response.put("error", e.toString())
+                    callbackContext.error(response)
+                }
             }
         }
     }

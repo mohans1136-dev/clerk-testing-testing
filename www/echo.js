@@ -161,6 +161,29 @@ var Echo = {
     },
 
     /**
+     * Start Hosted Authentication via Clerk's Account Portal (in-app browser overlay)
+     * Supports Microsoft Enterprise SSO (OIDC), Google, Passwords, MFA, etc.
+     * @param {Object|string} [options] - Options object { mode: 'sign_in'|'sign_up' } or mode string ('sign_in' | 'sign_up')
+     * @param {function} successCallback - Callback returning JSON object on success
+     * @param {function} errorCallback - Callback returning JSON object on error/cancellation
+     */
+    startHostedAuth: function (options, successCallback, errorCallback) {
+        var mode = 'sign_in';
+        if (typeof options === 'function') {
+            errorCallback = successCallback;
+            successCallback = options;
+            options = {};
+        } else if (typeof options === 'string') {
+            mode = options;
+        } else if (options && typeof options === 'object') {
+            if (typeof options.mode === 'string') {
+                mode = options.mode;
+            }
+        }
+        exec(successCallback, errorCallback, 'Echo', 'startHostedAuth', [mode]);
+    },
+
+    /**
      * Query configured Keychain / Storage Access Group name for session sharing
      * @param {function} successCallback - Callback returning JSON object with accessGroup
      * @param {function} errorCallback - Callback returning JSON error object

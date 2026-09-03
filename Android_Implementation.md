@@ -26,6 +26,7 @@ The plugin bridges the web layer (JavaScript in the Cordova WebView) to the nati
 ┌──────────────────────────▼─────────────────────────────┐
 │          Clerk Android SDK (com.clerk.api)             │
 │       - Clerk.initialize()                             │
+│       - Clerk.auth.startHostedAuth() [OIDC / SSO]      │
 │       - Clerk.auth.signInWithPassword()                │
 │       - Clerk.auth.setActive()                         │
 │       - Clerk.auth.signOut()                           │
@@ -86,7 +87,74 @@ sequenceDiagram
 
 ---
 
-### 2. User Authentication Flow (`signInWithPassword` & `setActive`)
+### 2. Hosted Authentication Flow (`startHostedAuth` - Microsoft Enterprise SSO / Account Portal)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    actor App as Hybrid App / OutSystems UI
+    participant JS as echo.js
+    participant Native as Echo.kt
+    participant Pool as Cordova ThreadPool
+    participant Coroutine as Dispatchers.IO (runBlocking)
+    participant ClerkSDK as Clerk.auth
+    participant CustomTab as In-App Custom Tab
+    participant ClerkPortal as Clerk Account Portal
+    participant Microsoft as Microsoft Entra ID (Azure AD)
+    participant Storage as Android Shared Storage
+
+    App->>JS: startHostedAuth({ mode: 'sign_in' })
+    JS->>Native: exec("Echo", "startHostedAuth", [mode])
+    Native->>Pool: execute { ... }
+    
+    activate Pool
+    Pool->>Pool: Verify Clerk.isInitialized
+    Pool->>Coroutine: runBlocking(Dispatchers.IO)
+    activate Coroutine
+    
+    Coroutine->>ClerkSDK: Clerk.auth.startHostedAuth(mode)
+    activate ClerkSDK
+    ClerkSDK->>CustomTab: Launch in-app Custom Tab overlay
+    CustomTab->>ClerkPortal: Load Account Portal
+    
+    opt Microsoft Enterprise SSO
+        User->>CustomTab: Click "Sign in with Microsoft"
+        CustomTab->>Microsoft: Azure AD OAuth Flow & Conditional Access
+        Microsoft-->>CustomTab: OAuth Callback to Clerk
+    end
+    
+    ClerkPortal-->>ClerkSDK: Deep link return with Auth Ticket
+    ClerkSDK->>CustomTab: Dismiss browser overlay automatically
+    ClerkSDK->>ClerkSDK: Set active session & refresh tokens
+    ClerkSDK->>Storage: Persist session to shared storage (SharedSessionSyncConfig)
+    ClerkSDK-->>Coroutine: ClerkResult.Success(Session)
+    deactivate ClerkSDK
+    
+    alt Success
+        Coroutine-->>Pool: Session details (sessionId, userId, names, email)
+        Pool-->>Native: JSON { status: "success", sessionId, userId, firstName, lastName, email }
+        Native-->>JS: callbackContext.success(response)
+        JS-->>App: Return user session payload
+    else User Cancelled (Closed Browser)
+        ClerkSDK-->>Coroutine: Cancellation Exception / Error
+        Coroutine-->>Pool: Cancellation detected
+        Pool-->>Native: JSON { status: "cancelled", message: "User cancelled authentication" }
+        Native-->>JS: callbackContext.error(response)
+        JS-->>App: Handle cancellation
+    else Error
+        Coroutine-->>Pool: Error message & code
+        Pool-->>Native: JSON { status: "error", message, errorCode }
+        Native-->>JS: callbackContext.error(response)
+        JS-->>App: Handle error
+    end
+    deactivate Coroutine
+    deactivate Pool
+```
+
+---
+
+### 3. User Authentication Flow (`signInWithPassword` & `setActive`)
 
 ```mermaid
 sequenceDiagram

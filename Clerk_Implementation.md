@@ -47,7 +47,7 @@ graph TD
 | File Path | Component | Responsibility |
 |---|---|---|
 | [`www/echo.js`](file:///d:/Luvelo/Plugins/clerk-testing-testing/www/echo.js) | JavaScript Interface | Exposes standard JavaScript methods on `window.echo` and `cordova.plugins.echo`. Handles argument validation and delegates to `cordova.exec`. |
-| [`src/android/org/apache/cordova/plugin/echo/Echo.kt`](file:///d:/Luvelo/Plugins/clerk-testing-testing/src/android/org/apache/cordova/plugin/echo/Echo.kt) | Android Native Engine | Uses official `com.clerk:clerk-android-api:1.1.1` via Kotlin Coroutines. Integrates `SharedSessionSyncConfig.enabled` for cross-app session synchronization. |
+| [`src/android/org/apache/cordova/plugin/echo/Echo.kt`](file:///d:/Luvelo/Plugins/clerk-testing-testing/src/android/org/apache/cordova/plugin/echo/Echo.kt) | Android Native Engine | Uses official `com.clerk:clerk-android-api:1.1.1` via Kotlin Coroutines. Integrates `SharedSessionSyncConfig.enabled` for cross-app session synchronization. Supports both direct `signInWithPassword` and browser-overlay `startHostedAuth` (Microsoft Enterprise SSO / OIDC / MFA). |
 | [`src/ios/EchoPlugin.swift`](file:///d:/Luvelo/Plugins/clerk-testing-testing/src/ios/EchoPlugin.swift) | iOS Native Engine | Implements native Clerk Frontend REST API calls, extracts API hosts from publishable keys, stores sessions in shared Keychain Access Groups, and handles automatic recovery from dev browser cookie issues. |
 | [`plugin.xml`](file:///d:/Luvelo/Plugins/clerk-testing-testing/plugin.xml) | Plugin Manifest | Configures Android permissions, Gradle Kotlin dependencies, and automatically registers iOS Keychain Access Group entitlements (`$(AppIdentifierPrefix)org.luvelo.dev.shared`) for OutSystems MABS cloud builds. |
 
@@ -57,9 +57,10 @@ graph TD
 
 ### Android: Kotlin Engine & Clerk Android SDK
 - **Dependency**: `com.clerk:clerk-android-api:1.1.1`
+- **Hosted Authentication**: `Clerk.auth.startHostedAuth(mode)` for interactive Microsoft Enterprise SSO, Passkeys, Google, and Account Portal flows.
 - **Session Sync**: Configured through `ClerkConfigurationOptions(sharedSessionSync = SharedSessionSyncConfig.enabled)`.
 - **Concurrency**: Operations run on background coroutines via `Dispatchers.IO` wrapped in `cordova.threadPool`.
-- **Error Handling**: Automatically extracts descriptive messages from `ClerkResult.Failure`.
+- **Error Handling**: Automatically extracts descriptive messages from `ClerkResult.Failure` and handles browser cancellation cleanly.
 
 ### iOS: Swift REST Engine & Shared Keychain Access Group
 - **Keychain Service**: `com.luvelo.clerk.sharedservice`
