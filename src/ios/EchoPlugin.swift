@@ -678,9 +678,9 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
-            let bundleId = Bundle.main.bundleIdentifier ?? "org.luvelo.dev.shared"
-            let callbackScheme = bundleId.components(separatedBy: ".").last ?? "clerk"
-            let redirectUrl = "\(callbackScheme)://clerk-callback"
+            let bundleId = Bundle.main.bundleIdentifier ?? "org.luvelo.dev.ClerkApp2"
+            let callbackScheme = bundleId
+            let redirectUrl = "\(bundleId)://callback"
 
             var queryItems = [
                 URLQueryItem(name: "redirect_url", value: redirectUrl),
