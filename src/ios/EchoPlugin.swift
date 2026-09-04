@@ -136,6 +136,14 @@ class EchoPlugin : CDVPlugin {
         return nil
     }
 
+    private func getAccountPortalHost(publishableKey: String) -> String? {
+        guard let fapiHost = self.getFrontendApiHost(publishableKey: publishableKey) else { return nil }
+        if fapiHost.hasSuffix(".clerk.accounts.dev") {
+            return fapiHost.replacingOccurrences(of: ".clerk.accounts.dev", with: ".accounts.dev")
+        }
+        return fapiHost
+    }
+
     // MARK: - Plugin Actions
 
     @objc(echo:)
@@ -646,7 +654,8 @@ class EchoPlugin : CDVPlugin {
         self.commandDelegate!.run(inBackground: {
             let mode = command.argument(at: 0) as? String ?? "sign_in"
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
-            guard let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty else {
+            guard let fapiHost = self.getFrontendApiHost(publishableKey: pk),
+                  let portalHost = self.getAccountPortalHost(publishableKey: pk), !portalHost.isEmpty else {
                 let response: [String: Any] = [
                     "status": "error",
                     "message": "Clerk publishable key is missing or invalid. Please call initializeClerk(publishableKey) first.",
@@ -658,10 +667,10 @@ class EchoPlugin : CDVPlugin {
             }
 
             let path = (mode.lowercased() == "sign_up") ? "/sign-up" : "/sign-in"
-            guard var urlComponents = URLComponents(string: "https://\(host)\(path)") else {
+            guard var urlComponents = URLComponents(string: "https://\(portalHost)\(path)") else {
                 let response: [String: Any] = [
                     "status": "error",
-                    "message": "Invalid Account Portal URL for host: \(host)",
+                    "message": "Invalid Account Portal URL for host: \(portalHost)",
                     "errorCode": "invalid_url",
                     "platform": "ios"
                 ]
@@ -728,7 +737,7 @@ class EchoPlugin : CDVPlugin {
                         return
                     }
 
-                    self.handleHostedAuthCallback(callbackURL: callbackURL, host: host, pk: pk, command: command)
+                    self.handleHostedAuthCallback(callbackURL: callbackURL, host: fapiHost, pk: pk, command: command)
                 }
 
                 if #available(iOS 13.0, *) {
