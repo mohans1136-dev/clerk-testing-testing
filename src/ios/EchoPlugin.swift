@@ -722,9 +722,9 @@ class EchoPlugin : CDVPlugin {
 
     // MARK: - Hosted Authentication Initiation (POST /v1/client/hosted_auth)
 
-    private func requestHostedAuthUrl(host: String, clientToken: String, redirectUrl: String, codeChallenge: String, state: String, mode: String, completion: @escaping (Result<String, String>) -> Void) {
+    private func requestHostedAuthUrl(host: String, clientToken: String, redirectUrl: String, codeChallenge: String, state: String, mode: String, completion: @escaping (_ authUrl: String?, _ errorMessage: String?) -> Void) {
         guard let url = URL(string: "https://\(host)/v1/client/hosted_auth") else {
-            completion(.failure("Invalid hosted auth URL"))
+            completion(nil, "Invalid hosted auth URL")
             return
         }
 
@@ -750,29 +750,29 @@ class EchoPlugin : CDVPlugin {
         let task = URLSession.shared.dataTask(with: req) { data, response, error in
             self.extractAndSaveDevBrowserJwt(response: response)
             if let error = error {
-                completion(.failure("Network error: \(error.localizedDescription)"))
+                completion(nil, "Network error: \(error.localizedDescription)")
                 return
             }
 
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                completion(.failure("Invalid response from Clerk hosted auth endpoint"))
+                completion(nil, "Invalid response from Clerk hosted auth endpoint")
                 return
             }
 
             if let respObj = json["response"] as? [String: Any],
                let authUrl = respObj["url"] as? String, !authUrl.isEmpty {
-                completion(.success(authUrl))
+                completion(authUrl, nil)
                 return
             }
 
             if let errors = json["errors"] as? [[String: Any]], let firstErr = errors.first {
                 let msg = firstErr["long_message"] as? String ?? firstErr["message"] as? String ?? "Unknown Clerk error"
-                completion(.failure(msg))
+                completion(nil, msg)
                 return
             }
 
-            completion(.failure("Hosted auth response did not contain a valid URL"))
+            completion(nil, "Hosted auth response did not contain a valid URL")
         }
         task.resume()
     }
@@ -833,16 +833,18 @@ class EchoPlugin : CDVPlugin {
                 let tokenToUse = clientToken ?? "Bearer \(pk)"
 
                 // 3. Initiate Hosted Auth with Clerk FAPI to obtain signed Account Portal URL
-                self.requestHostedAuthUrl(host: fapiHost, clientToken: tokenToUse, redirectUrl: redirectUrl, codeChallenge: codeChallenge, state: state, mode: mode) { result in
-                    switch result {
-                    case .failure(let errorMsg):
+                self.requestHostedAuthUrl(host: fapiHost, clientToken: tokenToUse, redirectUrl: redirectUrl, codeChallenge: codeChallenge, state: state, mode: mode) { authUrlStr, errorMsg in
+                    if let authUrlStr = authUrlStr {
+                        self.launchWebAuthSession(urlStr: authUrlStr, callbackScheme: callbackScheme, fapiHost: fapiHost, pk: pk, command: command)
+                    } else {
                         // If token expired/signed_out, retry once with fresh client token
+                        let firstError = errorMsg ?? "Unknown error"
                         self.cachedClientToken = ""
                         self.fetchClientToken(host: fapiHost, publishableKey: pk) { freshToken in
                             guard let fresh = freshToken else {
                                 let response: [String: Any] = [
                                     "status": "error",
-                                    "message": "Failed to initiate hosted auth: \(errorMsg)",
+                                    "message": "Failed to initiate hosted auth: \(firstError)",
                                     "errorCode": "hosted_auth_init_failed",
                                     "platform": "ios"
                                 ]
@@ -850,25 +852,20 @@ class EchoPlugin : CDVPlugin {
                                 return
                             }
 
-                            self.requestHostedAuthUrl(host: fapiHost, clientToken: fresh, redirectUrl: redirectUrl, codeChallenge: codeChallenge, state: state, mode: mode) { retryResult in
-                                switch retryResult {
-                                case .failure(let retryError):
+                            self.requestHostedAuthUrl(host: fapiHost, clientToken: fresh, redirectUrl: redirectUrl, codeChallenge: codeChallenge, state: state, mode: mode) { retryAuthUrl, retryError in
+                                if let retryAuthUrl = retryAuthUrl {
+                                    self.launchWebAuthSession(urlStr: retryAuthUrl, callbackScheme: callbackScheme, fapiHost: fapiHost, pk: pk, command: command)
+                                } else {
                                     let response: [String: Any] = [
                                         "status": "error",
-                                        "message": "Failed to initiate hosted auth: \(retryError)",
+                                        "message": "Failed to initiate hosted auth: \(retryError ?? firstError)",
                                         "errorCode": "hosted_auth_init_failed",
                                         "platform": "ios"
                                     ]
                                     self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
-
-                                case .success(let authUrlStr):
-                                    self.launchWebAuthSession(urlStr: authUrlStr, callbackScheme: callbackScheme, fapiHost: fapiHost, pk: pk, command: command)
                                 }
                             }
                         }
-
-                    case .success(let authUrlStr):
-                        self.launchWebAuthSession(urlStr: authUrlStr, callbackScheme: callbackScheme, fapiHost: fapiHost, pk: pk, command: command)
                     }
                 }
             }
