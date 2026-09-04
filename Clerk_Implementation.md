@@ -65,6 +65,7 @@ graph TD
 ### iOS: Swift REST Engine & Shared Keychain Access Group
 - **Keychain Service**: `com.luvelo.clerk.sharedservice`
 - **Keychain Access Group**: `org.luvelo.dev.shared`
+- **Hosted Authentication**: `ASWebAuthenticationSession` native sheet integration for Microsoft Enterprise SSO (OIDC), Passkeys, Social logins, and Account Portal flows with zero external dependencies.
 - **Frontend API Host Resolution**: Dynamically extracts and decodes the Clerk Frontend API domain from the base64-encoded publishable key (`pk_test_...` or `pk_live_...`).
 - **State Storage**:
   - `active_clerk_session_jwt`

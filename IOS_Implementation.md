@@ -55,7 +55,49 @@ graph TB
 
 ## 📊 Sequence Diagrams
 
-### 1. User Authentication (`signInWithPassword`)
+### 1. Hosted Authentication (`startHostedAuth` - Microsoft Enterprise SSO & Account Portal)
+
+Uses Apple's native **`ASWebAuthenticationSession`** to present Clerk's hosted Account Portal in a secure sheet overlay. Automatically supports **Microsoft Enterprise SSO (OIDC)**, Passkeys, Google/Apple login, and MFA, persisting authenticated session tokens into the Shared Keychain.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant App as OutSystems Mobile App (iOS)
+    participant JS as echo.js Bridge
+    participant Swift as EchoPlugin.swift (iOS)
+    participant ASWeb as ASWebAuthenticationSession
+    participant ClerkPortal as Clerk Account Portal
+    participant Microsoft as Microsoft Entra ID (OIDC)
+    participant Keychain as iOS Shared Keychain (org.luvelo.dev.shared)
+
+    App->>JS: window.echo.startHostedAuth({ mode: 'sign_in' })
+    JS->>Swift: exec("Echo", "startHostedAuth", [mode])
+    
+    Swift->>Swift: Resolve Account Portal URL & Callback Scheme
+    Swift->>ASWeb: Initialize ASWebAuthenticationSession
+    ASWeb->>User: Display system authentication prompt
+    ASWeb->>ClerkPortal: Load Account Portal in secure browser sheet
+    
+    opt Microsoft Enterprise SSO
+        User->>ClerkPortal: Click "Sign in with Microsoft"
+        ClerkPortal->>Microsoft: Azure AD OAuth Flow & Conditional Access
+        Microsoft-->>ClerkPortal: OAuth Callback
+    end
+
+    ClerkPortal-->>ASWeb: Redirect with Session tokens
+    ASWeb-->>Swift: Completion Handler with Callback URL
+    
+    Swift->>Swift: Extract created_session_id & dev_browser_jwt
+    Swift->>Swift: Live query https://{host}/v1/client for User Profile
+    Swift->>Keychain: Persist (sessionId, userId, names, email, tokens)
+    Swift-->>JS: CDVPluginResult(OK, { status: "success", sessionId, userId, email, firstName, lastName })
+    JS-->>App: Return authenticated user data
+```
+
+---
+
+### 2. User Authentication (`signInWithPassword`)
 
 Handles authentication using the Clerk Frontend API, dev-browser session coordination, automatic recovery from stale development tokens (`dev_browser_unauthenticated`), and secure session persistence to the shared iOS Keychain.
 
