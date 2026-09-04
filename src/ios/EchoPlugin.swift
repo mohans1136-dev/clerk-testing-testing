@@ -268,6 +268,7 @@ class EchoPlugin : CDVPlugin {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.httpShouldHandleCookies = false
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         if !pk.isEmpty {
             request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
@@ -486,6 +487,7 @@ class EchoPlugin : CDVPlugin {
                 if let url = urlComponents.url {
                     var request = URLRequest(url: url)
                     request.httpMethod = "GET"
+                    request.httpShouldHandleCookies = false
                     request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
                     if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
                         request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
@@ -685,37 +687,61 @@ class EchoPlugin : CDVPlugin {
 
     // MARK: - Client Token Resolver
 
-    private func fetchClientToken(host: String, publishableKey: String, completion: @escaping (String?) -> Void) {
+    private func fetchClientToken(host: String, publishableKey: String, completion: @escaping (_ token: String?, _ error: String?) -> Void) {
         if !self.cachedClientToken.isEmpty {
-            completion(self.cachedClientToken)
+            completion(self.cachedClientToken, nil)
             return
         }
 
         guard let url = URL(string: "https://\(host)/v1/client") else {
-            completion(nil)
+            completion(nil, "Invalid Clerk Frontend API URL")
             return
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        req.httpShouldHandleCookies = false
         req.setValue("Bearer \(publishableKey)", forHTTPHeaderField: "Authorization")
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        req.setValue("0", forHTTPHeaderField: "Content-Length")
-        if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-            req.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
-        }
+        req.httpBody = Data()
 
-        let task = URLSession.shared.dataTask(with: req) { _, response, _ in
+        let task = URLSession.shared.dataTask(with: req) { data, response, error in
+            if let error = error {
+                completion(nil, "Network error fetching client token: \(error.localizedDescription)")
+                return
+            }
+
+            guard let httpResp = response as? HTTPURLResponse else {
+                completion(nil, "No HTTP response received from Clerk client endpoint")
+                return
+            }
+
             self.extractAndSaveDevBrowserJwt(response: response)
-            if let httpResp = response as? HTTPURLResponse {
-                let authHeader = httpResp.allHeaderFields["authorization"] as? String
-                    ?? httpResp.allHeaderFields["Authorization"] as? String
-                if let auth = authHeader, !auth.isEmpty {
-                    self.cachedClientToken = auth
-                    completion(auth)
-                    return
+
+            var authHeader: String? = nil
+            if #available(iOS 13.0, *) {
+                authHeader = httpResp.value(forHTTPHeaderField: "Authorization")
+            }
+            if authHeader == nil || authHeader?.isEmpty == true {
+                for (k, v) in httpResp.allHeaderFields {
+                    if "\(k)".lowercased() == "authorization" {
+                        authHeader = v as? String
+                        break
+                    }
                 }
             }
-            completion(nil)
+
+            if let auth = authHeader, !auth.isEmpty {
+                self.cachedClientToken = auth
+                completion(auth, nil)
+                return
+            }
+
+            var errMsg = "HTTP \(httpResp.statusCode): Failed to obtain client token"
+            if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let errors = json["errors"] as? [[String: Any]], let firstErr = errors.first {
+                errMsg = firstErr["long_message"] as? String ?? firstErr["message"] as? String ?? errMsg
+            }
+            completion(nil, errMsg)
         }
         task.resume()
     }
@@ -730,6 +756,7 @@ class EchoPlugin : CDVPlugin {
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        req.httpShouldHandleCookies = false
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.setValue(clientToken, forHTTPHeaderField: "Authorization")
         if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
@@ -828,23 +855,36 @@ class EchoPlugin : CDVPlugin {
             let callbackScheme = bundleId
             let redirectUrl = "\(bundleId)://callback"
 
+            // Ensure clean state before requesting client token
+            self.purgeAllClerkCookies()
+
             // 2. Obtain Client JWT from Clerk FAPI
-            self.fetchClientToken(host: fapiHost, publishableKey: pk) { clientToken in
-                let tokenToUse = clientToken ?? "Bearer \(pk)"
+            self.fetchClientToken(host: fapiHost, publishableKey: pk) { clientToken, clientErr in
+                guard let tokenToUse = clientToken, !tokenToUse.isEmpty else {
+                    let response: [String: Any] = [
+                        "status": "error",
+                        "message": "Failed to initiate hosted auth: \(clientErr ?? "Unable to obtain Clerk client token")",
+                        "errorCode": "hosted_auth_init_failed",
+                        "platform": "ios"
+                    ]
+                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                    return
+                }
 
                 // 3. Initiate Hosted Auth with Clerk FAPI to obtain signed Account Portal URL
                 self.requestHostedAuthUrl(host: fapiHost, clientToken: tokenToUse, redirectUrl: redirectUrl, codeChallenge: codeChallenge, state: state, mode: mode) { authUrlStr, errorMsg in
                     if let authUrlStr = authUrlStr {
                         self.launchWebAuthSession(urlStr: authUrlStr, callbackScheme: callbackScheme, fapiHost: fapiHost, pk: pk, command: command)
                     } else {
-                        // If token expired/signed_out, retry once with fresh client token
+                        // If token expired/signed_out or dev_browser_unauthenticated, purge and retry once with fresh client token
                         let firstError = errorMsg ?? "Unknown error"
                         self.cachedClientToken = ""
-                        self.fetchClientToken(host: fapiHost, publishableKey: pk) { freshToken in
-                            guard let fresh = freshToken else {
+                        self.purgeAllClerkCookies()
+                        self.fetchClientToken(host: fapiHost, publishableKey: pk) { freshToken, freshErr in
+                            guard let fresh = freshToken, !fresh.isEmpty else {
                                 let response: [String: Any] = [
                                     "status": "error",
-                                    "message": "Failed to initiate hosted auth: \(firstError)",
+                                    "message": "Failed to initiate hosted auth: \(freshErr ?? firstError)",
                                     "errorCode": "hosted_auth_init_failed",
                                     "platform": "ios"
                                 ]
@@ -986,6 +1026,7 @@ class EchoPlugin : CDVPlugin {
 
             var redeemReq = URLRequest(url: redeemUrl)
             redeemReq.httpMethod = "POST"
+            redeemReq.httpShouldHandleCookies = false
             redeemReq.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             redeemReq.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
             if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
@@ -1008,8 +1049,18 @@ class EchoPlugin : CDVPlugin {
 
                 var jwtToken = ""
                 if let httpResp = response as? HTTPURLResponse {
-                    let authHeader = httpResp.allHeaderFields["authorization"] as? String
-                        ?? httpResp.allHeaderFields["Authorization"] as? String
+                    var authHeader: String? = nil
+                    if #available(iOS 13.0, *) {
+                        authHeader = httpResp.value(forHTTPHeaderField: "Authorization")
+                    }
+                    if authHeader == nil || authHeader?.isEmpty == true {
+                        for (k, v) in httpResp.allHeaderFields {
+                            if "\(k)".lowercased() == "authorization" {
+                                authHeader = v as? String
+                                break
+                            }
+                        }
+                    }
                     if let auth = authHeader, !auth.isEmpty {
                         jwtToken = auth
                         self.cachedClientToken = auth
@@ -1054,6 +1105,7 @@ class EchoPlugin : CDVPlugin {
                 if userId.isEmpty && !createdSessionId.isEmpty {
                     var fetchReq = URLRequest(url: URL(string: "https://\(host)/v1/client")!)
                     fetchReq.httpMethod = "GET"
+                    fetchReq.httpShouldHandleCookies = false
                     fetchReq.setValue(!jwtToken.isEmpty ? jwtToken : "Bearer \(pk)", forHTTPHeaderField: "Authorization")
                     if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
                         fetchReq.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
