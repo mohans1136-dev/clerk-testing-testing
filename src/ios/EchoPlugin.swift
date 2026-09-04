@@ -355,6 +355,12 @@ class EchoPlugin : CDVPlugin {
                 }
             }
 
+            if userId.isEmpty && !jwtToken.isEmpty {
+                if let sub = self.extractUserIdFromJwt(token: jwtToken) {
+                    userId = sub
+                }
+            }
+
             if !createdSessionId.isEmpty {
                 self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: createdSessionId)
             }
@@ -446,13 +452,22 @@ class EchoPlugin : CDVPlugin {
     func getCurrentUser(command: CDVInvokedUrlCommand) {
         self.commandDelegate!.run(inBackground: {
             let sessionId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY) ?? ""
-            let userId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY) ?? ""
-            let firstName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY) ?? ""
-            let lastName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY) ?? ""
-            let email = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY) ?? ""
+            var userId = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY) ?? ""
+            var firstName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY) ?? ""
+            var lastName = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY) ?? ""
+            var email = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY) ?? ""
+            let sessionToken = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY) ?? ""
 
-            // If no active session or user exists in Keychain, user is signed out
-            if sessionId.isEmpty && userId.isEmpty {
+            // Instant recovery: If userId is missing, extract sub claim from sessionToken JWT
+            if (userId.isEmpty || userId == "user_shared_session") && !sessionToken.isEmpty {
+                if let sub = self.extractUserIdFromJwt(token: sessionToken) {
+                    userId = sub
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: sub)
+                }
+            }
+
+            // If no active session or token exists in Keychain, user is signed out
+            if sessionId.isEmpty && userId.isEmpty && sessionToken.isEmpty {
                 let response: [String: Any] = [
                     "status": "success",
                     "isSignedIn": false,
@@ -463,72 +478,78 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
-            // We have an active session! Return signed-in user metadata
-            var response: [String: Any] = [
+            // Best-effort live refresh from Clerk using Session Touch or Client endpoint
+            let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
+            if let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty {
+                let authHeaderToUse = !sessionToken.isEmpty ? (!sessionToken.starts(with: "Bearer ") ? "Bearer \(sessionToken)" : sessionToken) : (!self.cachedClientToken.isEmpty ? self.cachedClientToken : "Bearer \(pk)")
+
+                // 1. If sessionId is known, touch the session to get full session + user metadata
+                if !sessionId.isEmpty, let touchUrl = URL(string: "https://\(host)/v1/client/sessions/\(sessionId)/touch") {
+                    var touchReq = URLRequest(url: touchUrl)
+                    touchReq.httpMethod = "POST"
+                    touchReq.httpShouldHandleCookies = false
+                    touchReq.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                    touchReq.setValue(authHeaderToUse, forHTTPHeaderField: "Authorization")
+                    touchReq.httpBody = "active_organization_id=&intent=select_org".data(using: .utf8)
+
+                    let sem = DispatchSemaphore(value: 0)
+                    URLSession.shared.dataTask(with: touchReq) { data, _, _ in
+                        if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            let sessObj = json["response"] as? [String: Any] ?? json["session"] as? [String: Any]
+                            if let sess = sessObj {
+                                if let userObj = sess["user"] as? [String: Any] {
+                                    if let uId = userObj["id"] as? String, !uId.isEmpty { userId = uId }
+                                    if let fName = userObj["first_name"] as? String { firstName = fName }
+                                    if let lName = userObj["last_name"] as? String { lastName = lName }
+                                    if let emailList = userObj["email_addresses"] as? [[String: Any]], let firstEmail = emailList.first, let eAddr = firstEmail["email_address"] as? String {
+                                        email = eAddr
+                                    }
+                                } else if let pubData = sess["public_user_data"] as? [String: Any] {
+                                    if let uId = pubData["user_id"] as? String, !uId.isEmpty { userId = uId }
+                                    if let fName = pubData["first_name"] as? String { firstName = fName }
+                                    if let lName = pubData["last_name"] as? String { lastName = lName }
+                                    if let idf = pubData["identifier"] as? String { email = idf }
+                                }
+                                if let lastTok = sess["last_active_token"] as? [String: Any], let jwt = lastTok["jwt"] as? String, !jwt.isEmpty {
+                                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_ACCOUNT_KEY, value: jwt)
+                                    if userId.isEmpty || userId == "user_shared_session" {
+                                        if let sub = self.extractUserIdFromJwt(token: jwt) { userId = sub }
+                                    }
+                                }
+                            }
+                        }
+                        sem.signal()
+                    }.resume()
+                    _ = sem.wait(timeout: .now() + 3.0)
+                }
+
+                // 2. Persist any refreshed metadata to Keychain
+                if !userId.isEmpty && userId != "user_shared_session" {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: userId)
+                }
+                if !firstName.isEmpty {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY, value: firstName)
+                }
+                if !lastName.isEmpty {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY, value: lastName)
+                }
+                if !email.isEmpty {
+                    self.saveToKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY, value: email)
+                }
+            }
+
+            let effectiveUserId = (!userId.isEmpty && userId != "user_shared_session") ? userId : (!sessionId.isEmpty ? sessionId : "user_shared_session")
+
+            let response: [String: Any] = [
                 "status": "success",
                 "isSignedIn": true,
-                "userId": userId.isEmpty ? "user_shared_session" : userId,
+                "userId": effectiveUserId,
                 "firstName": firstName,
                 "lastName": lastName,
                 "email": email,
                 "sessionId": sessionId,
                 "platform": "ios"
             ]
-
-            // Best-effort live refresh from Clerk /v1/client using Publishable Key
-            let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
-            if let host = self.getFrontendApiHost(publishableKey: pk), !host.isEmpty, var urlComponents = URLComponents(string: "https://\(host)/v1/client") {
-                var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
-                if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                    queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
-                }
-                urlComponents.queryItems = queryItems
-
-                if let url = urlComponents.url {
-                    var request = URLRequest(url: url)
-                    request.httpMethod = "GET"
-                    request.httpShouldHandleCookies = false
-                    request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-                    if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                        request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
-                    }
-
-                    let semaphore = DispatchSemaphore(value: 0)
-                    var responseJson: [String: Any]?
-                    var statusCode: Int = 0
-
-                    let task = URLSession.shared.dataTask(with: request) { data, resp, _ in
-                        self.extractAndSaveDevBrowserJwt(response: resp)
-                        if let httpResp = resp as? HTTPURLResponse {
-                            statusCode = httpResp.statusCode
-                        }
-                        if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                            responseJson = json
-                        }
-                        semaphore.signal()
-                    }
-                    task.resume()
-                    _ = semaphore.wait(timeout: .now() + 3.0)
-
-                    if (statusCode == 200 || statusCode == 304), let json = responseJson, let clientObj = json["client"] as? [String: Any],
-                       let sessionsList = clientObj["sessions"] as? [[String: Any]], let activeSession = sessionsList.first(where: { ($0["id"] as? String) == sessionId }) ?? sessionsList.first,
-                       let userObj = activeSession["user"] as? [String: Any] {
-
-                        let freshUserId = userObj["id"] as? String ?? userId
-                        let freshFirstName = userObj["first_name"] as? String ?? firstName
-                        let freshLastName = userObj["last_name"] as? String ?? lastName
-
-                        self.saveToKeychain(key: EchoPlugin.KEYCHAIN_USER_ID_KEY, value: freshUserId)
-                        self.saveToKeychain(key: EchoPlugin.KEYCHAIN_FIRST_NAME_KEY, value: freshFirstName)
-                        self.saveToKeychain(key: EchoPlugin.KEYCHAIN_LAST_NAME_KEY, value: freshLastName)
-
-                        response["userId"] = freshUserId
-                        response["firstName"] = freshFirstName
-                        response["lastName"] = freshLastName
-                    }
-                }
-            }
-
             self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
         })
     }
@@ -683,6 +704,24 @@ class EchoPlugin : CDVPlugin {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "!*'();:@&=+$,/?%#[]")
         return string.addingPercentEncoding(withAllowedCharacters: allowed) ?? string
+    }
+
+    private func extractUserIdFromJwt(token: String) -> String? {
+        let cleanToken = token.replacingOccurrences(of: "Bearer ", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = cleanToken.components(separatedBy: ".")
+        guard parts.count >= 2 else { return nil }
+        var base64 = parts[1]
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 {
+            base64.append("=")
+        }
+        guard let data = Data(base64Encoded: base64),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sub = json["sub"] as? String, !sub.isEmpty else {
+            return nil
+        }
+        return sub
     }
 
     // MARK: - Client Token Resolver
@@ -1028,7 +1067,8 @@ class EchoPlugin : CDVPlugin {
             redeemReq.httpMethod = "POST"
             redeemReq.httpShouldHandleCookies = false
             redeemReq.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            redeemReq.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+            let authHeaderToUse = !self.cachedClientToken.isEmpty ? self.cachedClientToken : "Bearer \(pk)"
+            redeemReq.setValue(authHeaderToUse, forHTTPHeaderField: "Authorization")
             if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
                 redeemReq.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
             }
@@ -1087,6 +1127,7 @@ class EchoPlugin : CDVPlugin {
                                 }
                                 if let lastActiveToken = sess["last_active_token"] as? [String: Any], let jwt = lastActiveToken["jwt"] as? String, !jwt.isEmpty {
                                     jwtToken = jwt
+                                    self.cachedClientToken = jwt
                                 }
                                 if let userObj = sess["user"] as? [String: Any] {
                                     userId = userObj["id"] as? String ?? ""
@@ -1096,37 +1137,64 @@ class EchoPlugin : CDVPlugin {
                                         email = firstEmail["email_address"] as? String ?? ""
                                     }
                                 }
+                                if userId.isEmpty, let pubData = sess["public_user_data"] as? [String: Any] {
+                                    userId = pubData["user_id"] as? String ?? ""
+                                    if firstName.isEmpty { firstName = pubData["first_name"] as? String ?? "" }
+                                    if lastName.isEmpty { lastName = pubData["last_name"] as? String ?? "" }
+                                    if email.isEmpty { email = pubData["identifier"] as? String ?? "" }
+                                }
                             }
                         }
                     }
                 }
 
-                // Fallback: If sessions list in client was empty, attempt one best-effort fetch via GET /v1/client
-                if userId.isEmpty && !createdSessionId.isEmpty {
-                    var fetchReq = URLRequest(url: URL(string: "https://\(host)/v1/client")!)
-                    fetchReq.httpMethod = "GET"
-                    fetchReq.httpShouldHandleCookies = false
-                    fetchReq.setValue(!jwtToken.isEmpty ? jwtToken : "Bearer \(pk)", forHTTPHeaderField: "Authorization")
-                    if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                        fetchReq.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+                // Fallback 1: Extract userId directly from session JWT sub claim
+                if userId.isEmpty && !jwtToken.isEmpty {
+                    if let sub = self.extractUserIdFromJwt(token: jwtToken) {
+                        userId = sub
                     }
-                    let sem = DispatchSemaphore(value: 0)
-                    URLSession.shared.dataTask(with: fetchReq) { fData, _, _ in
-                        if let fData = fData, let fJson = try? JSONSerialization.jsonObject(with: fData) as? [String: Any],
-                           let fClient = fJson["client"] as? [String: Any] ?? fJson["response"] as? [String: Any],
-                           let fSessions = fClient["sessions"] as? [[String: Any]],
-                           let fActive = fSessions.first(where: { ($0["id"] as? String) == createdSessionId }) ?? fSessions.first,
-                           let fUser = fActive["user"] as? [String: Any] {
-                            userId = fUser["id"] as? String ?? ""
-                            firstName = fUser["first_name"] as? String ?? ""
-                            lastName = fUser["last_name"] as? String ?? ""
-                            if let fEmails = fUser["email_addresses"] as? [[String: Any]], let fEmail = fEmails.first {
-                                email = fEmail["email_address"] as? String ?? ""
+                }
+
+                // Fallback 2: Query Clerk's session touch endpoint using createdSessionId
+                if userId.isEmpty && !createdSessionId.isEmpty {
+                    if let touchUrl = URL(string: "https://\(host)/v1/client/sessions/\(createdSessionId)/touch") {
+                        var touchReq = URLRequest(url: touchUrl)
+                        touchReq.httpMethod = "POST"
+                        touchReq.httpShouldHandleCookies = false
+                        touchReq.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                        let touchAuth = !jwtToken.isEmpty ? (!jwtToken.starts(with: "Bearer ") ? "Bearer \(jwtToken)" : jwtToken) : authHeaderToUse
+                        touchReq.setValue(touchAuth, forHTTPHeaderField: "Authorization")
+                        touchReq.httpBody = "active_organization_id=&intent=select_org".data(using: .utf8)
+                        let sem = DispatchSemaphore(value: 0)
+                        URLSession.shared.dataTask(with: touchReq) { tData, _, _ in
+                            if let tData = tData, let tJson = try? JSONSerialization.jsonObject(with: tData) as? [String: Any] {
+                                let sessObj = tJson["response"] as? [String: Any] ?? tJson["session"] as? [String: Any]
+                                if let sess = sessObj {
+                                    if let uObj = sess["user"] as? [String: Any] {
+                                        userId = uObj["id"] as? String ?? userId
+                                        if firstName.isEmpty { firstName = uObj["first_name"] as? String ?? "" }
+                                        if lastName.isEmpty { lastName = uObj["last_name"] as? String ?? "" }
+                                        if email.isEmpty, let emailList = uObj["email_addresses"] as? [[String: Any]], let firstEmail = emailList.first {
+                                            email = firstEmail["email_address"] as? String ?? ""
+                                        }
+                                    } else if let pubData = sess["public_user_data"] as? [String: Any] {
+                                        userId = pubData["user_id"] as? String ?? userId
+                                        if firstName.isEmpty { firstName = pubData["first_name"] as? String ?? "" }
+                                        if lastName.isEmpty { lastName = pubData["last_name"] as? String ?? "" }
+                                        if email.isEmpty { email = pubData["identifier"] as? String ?? "" }
+                                    }
+                                    if let lastTok = sess["last_active_token"] as? [String: Any], let tok = lastTok["jwt"] as? String, !tok.isEmpty {
+                                        jwtToken = tok
+                                        if userId.isEmpty, let sub = self.extractUserIdFromJwt(token: tok) {
+                                            userId = sub
+                                        }
+                                    }
+                                }
                             }
-                        }
-                        sem.signal()
-                    }.resume()
-                    _ = sem.wait(timeout: .now() + 3.0)
+                            sem.signal()
+                        }.resume()
+                        _ = sem.wait(timeout: .now() + 3.0)
+                    }
                 }
 
                 // Persist session to Shared Keychain
@@ -1151,11 +1219,13 @@ class EchoPlugin : CDVPlugin {
                     self.saveToKeychain(key: EchoPlugin.KEYCHAIN_EMAIL_KEY, value: email)
                 }
 
+                let effectiveUserId = !userId.isEmpty ? userId : (!createdSessionId.isEmpty ? createdSessionId : "user_shared_session")
+
                 let resultResponse: [String: Any] = [
                     "status": "success",
                     "message": "Hosted authentication successful",
                     "sessionId": createdSessionId,
-                    "userId": userId,
+                    "userId": effectiveUserId,
                     "firstName": firstName,
                     "lastName": lastName,
                     "email": email,

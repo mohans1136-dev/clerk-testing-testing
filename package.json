@@ -1,6 +1,6 @@
 {
   "name": "cordova-plugin-echo",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "description": "Simple Cordova Android Plugin in Kotlin (Echo Plugin)",
   "cordova": {
     "id": "cordova-plugin-echo",
