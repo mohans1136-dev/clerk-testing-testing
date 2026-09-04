@@ -684,9 +684,11 @@ class EchoPlugin : CDVPlugin {
 
             var queryItems = [
                 URLQueryItem(name: "redirect_url", value: redirectUrl),
+                URLQueryItem(name: "after_sign_in_url", value: redirectUrl),
+                URLQueryItem(name: "after_sign_up_url", value: redirectUrl),
                 URLQueryItem(name: "fallback_redirect_url", value: redirectUrl),
-                URLQueryItem(name: "sign_in_fallback_redirect_url", value: redirectUrl),
-                URLQueryItem(name: "sign_up_fallback_redirect_url", value: redirectUrl),
+                URLQueryItem(name: "sign_in_force_redirect_url", value: redirectUrl),
+                URLQueryItem(name: "sign_up_force_redirect_url", value: redirectUrl),
                 URLQueryItem(name: "_clerk_js_version", value: "5.0.0")
             ]
             if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
@@ -745,7 +747,7 @@ class EchoPlugin : CDVPlugin {
 
                 if #available(iOS 13.0, *) {
                     self.authSession?.presentationContextProvider = self
-                    self.authSession?.prefersEphemeralWebBrowserSession = true
+                    self.authSession?.prefersEphemeralWebBrowserSession = false
                 }
 
                 self.authSession?.start()
