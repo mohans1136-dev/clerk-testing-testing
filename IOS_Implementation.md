@@ -57,7 +57,7 @@ graph TB
 
 ### 1. Hosted Authentication (`startHostedAuth` - Microsoft Enterprise SSO & Account Portal)
 
-Uses Apple's native **`ASWebAuthenticationSession`** to present Clerk's hosted Account Portal in a secure sheet overlay. Automatically supports **Microsoft Enterprise SSO (OIDC)**, Passkeys, Google/Apple login, and MFA, persisting authenticated session tokens into the Shared Keychain.
+Uses Apple's native **`ASWebAuthenticationSession`** and Clerk's official 3-step PKCE Native Hosted Auth handshake (`POST /v1/client/hosted_auth` -> Account Portal -> `/hosted-native-auth/complete` -> Session Redemption via `POST /v1/client`). Automatically supports **Microsoft Enterprise SSO (OIDC)**, Passkeys, Google/Apple login, and MFA, persisting authenticated session tokens into the Shared Keychain.
 
 ```mermaid
 sequenceDiagram
@@ -66,30 +66,32 @@ sequenceDiagram
     participant App as OutSystems Mobile App (iOS)
     participant JS as echo.js Bridge
     participant Swift as EchoPlugin.swift (iOS)
+    participant FAPI as Clerk FAPI (/v1/client)
     participant ASWeb as ASWebAuthenticationSession
     participant ClerkPortal as Clerk Account Portal
-    participant Microsoft as Microsoft Entra ID (OIDC)
     participant Keychain as iOS Shared Keychain (org.luvelo.dev.shared)
 
     App->>JS: window.echo.startHostedAuth({ mode: 'sign_in' })
     JS->>Swift: exec("Echo", "startHostedAuth", [mode])
     
-    Swift->>Swift: Resolve Account Portal URL & Callback Scheme
-    Swift->>ASWeb: Initialize ASWebAuthenticationSession
-    ASWeb->>User: Display system authentication prompt
-    ASWeb->>ClerkPortal: Load Account Portal in secure browser sheet
+    Swift->>Swift: Generate PKCE (code_verifier, code_challenge) & state UUID
+    Swift->>FAPI: POST /v1/client (Get Client JWT)
+    FAPI-->>Swift: Client JWT
+    Swift->>FAPI: POST /v1/client/hosted_auth (redirect_url, code_challenge, state, mode)
+    FAPI-->>Swift: 200 OK with signed hosted_auth URL (containing transfer nonces)
     
-    opt Microsoft Enterprise SSO
-        User->>ClerkPortal: Click "Sign in with Microsoft"
-        ClerkPortal->>Microsoft: Azure AD OAuth Flow & Conditional Access
-        Microsoft-->>ClerkPortal: OAuth Callback
-    end
-
-    ClerkPortal-->>ASWeb: Redirect with Session tokens
+    Swift->>ASWeb: Initialize ASWebAuthenticationSession(url, callbackScheme)
+    ASWeb->>User: Display system authentication prompt
+    ASWeb->>ClerkPortal: Load Account Portal with __clerk_hosted_native_auth=1
+    
+    User->>ClerkPortal: Complete Sign In (Password / Google / Microsoft SSO / Passkey)
+    ClerkPortal->>ClerkPortal: Detect native auth -> routes to /hosted-native-auth/complete
+    ClerkPortal-->>ASWeb: Redirects to org.luvelo.dev.ClerkApp2://callback?state=...&rotating_token_nonce=...&created_session_id=...
     ASWeb-->>Swift: Completion Handler with Callback URL
     
-    Swift->>Swift: Extract created_session_id & dev_browser_jwt
-    Swift->>Swift: Live query https://{host}/v1/client for User Profile
+    Swift->>Swift: Validate state parameter matches initial state
+    Swift->>FAPI: POST /v1/client (_method=GET, rotating_token_nonce, code_verifier)
+    FAPI-->>Swift: Authenticated Client JSON & Session JWT
     Swift->>Keychain: Persist (sessionId, userId, names, email, tokens)
     Swift-->>JS: CDVPluginResult(OK, { status: "success", sessionId, userId, email, firstName, lastName })
     JS-->>App: Return authenticated user data

@@ -2,6 +2,7 @@ import Foundation
 import Security
 import WebKit
 import AuthenticationServices
+import CommonCrypto
 
 /**
  * Echo Cordova Plugin implemented in Swift for iOS with Native Clerk REST API & Shared Keychain Session Engine.
@@ -21,7 +22,10 @@ class EchoPlugin : CDVPlugin {
     private static let KEYCHAIN_EMAIL_KEY = "active_clerk_email"
 
     private var inMemoryPublishableKey: String = ""
+    private var cachedClientToken: String = ""
     private var authSession: ASWebAuthenticationSession?
+    private var activeHostedAuthState: String?
+    private var activeHostedAuthVerifier: String?
 
     // MARK: - Explicit Keychain & Cookie Cleaning
 
@@ -647,6 +651,132 @@ class EchoPlugin : CDVPlugin {
         })
     }
 
+    // MARK: - PKCE & Cryptography Helpers
+
+    private func generateRandomBytes(count: Int) -> Data? {
+        var bytes = [UInt8](repeating: 0, count: count)
+        let status = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        guard status == errSecSuccess else { return nil }
+        return Data(bytes)
+    }
+
+    private func sha256(data: Data) -> Data {
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes { buffer in
+            if let addr = buffer.baseAddress {
+                _ = CC_SHA256(addr, CC_LONG(data.count), &hash)
+            }
+        }
+        return Data(hash)
+    }
+
+    private func base64UrlEncode(data: Data) -> String {
+        return data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private func urlEncode(_ string: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "!*'();:@&=+$,/?%#[]")
+        return string.addingPercentEncoding(withAllowedCharacters: allowed) ?? string
+    }
+
+    // MARK: - Client Token Resolver
+
+    private func fetchClientToken(host: String, publishableKey: String, completion: @escaping (String?) -> Void) {
+        if !self.cachedClientToken.isEmpty {
+            completion(self.cachedClientToken)
+            return
+        }
+
+        guard let url = URL(string: "https://\(host)/v1/client") else {
+            completion(nil)
+            return
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(publishableKey)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        req.setValue("0", forHTTPHeaderField: "Content-Length")
+        if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+            req.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+        }
+
+        let task = URLSession.shared.dataTask(with: req) { _, response, _ in
+            self.extractAndSaveDevBrowserJwt(response: response)
+            if let httpResp = response as? HTTPURLResponse {
+                let authHeader = httpResp.allHeaderFields["authorization"] as? String
+                    ?? httpResp.allHeaderFields["Authorization"] as? String
+                if let auth = authHeader, !auth.isEmpty {
+                    self.cachedClientToken = auth
+                    completion(auth)
+                    return
+                }
+            }
+            completion(nil)
+        }
+        task.resume()
+    }
+
+    // MARK: - Hosted Authentication Initiation (POST /v1/client/hosted_auth)
+
+    private func requestHostedAuthUrl(host: String, clientToken: String, redirectUrl: String, codeChallenge: String, state: String, mode: String, completion: @escaping (Result<String, String>) -> Void) {
+        guard let url = URL(string: "https://\(host)/v1/client/hosted_auth") else {
+            completion(.failure("Invalid hosted auth URL"))
+            return
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        req.setValue(clientToken, forHTTPHeaderField: "Authorization")
+        if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+            req.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+        }
+
+        let modeParam = (mode.lowercased() == "sign_up") ? "sign-up" : "sign-in"
+        let postParams: [String: String] = [
+            "redirect_url": redirectUrl,
+            "code_challenge": codeChallenge,
+            "state": state,
+            "mode": modeParam
+        ]
+
+        let bodyString = postParams.map { "\(self.urlEncode($0.key))=\(self.urlEncode($0.value))" }.joined(separator: "&")
+        req.httpBody = bodyString.data(using: .utf8)
+
+        let task = URLSession.shared.dataTask(with: req) { data, response, error in
+            self.extractAndSaveDevBrowserJwt(response: response)
+            if let error = error {
+                completion(.failure("Network error: \(error.localizedDescription)"))
+                return
+            }
+
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                completion(.failure("Invalid response from Clerk hosted auth endpoint"))
+                return
+            }
+
+            if let respObj = json["response"] as? [String: Any],
+               let authUrl = respObj["url"] as? String, !authUrl.isEmpty {
+                completion(.success(authUrl))
+                return
+            }
+
+            if let errors = json["errors"] as? [[String: Any]], let firstErr = errors.first {
+                let msg = firstErr["long_message"] as? String ?? firstErr["message"] as? String ?? "Unknown Clerk error"
+                completion(.failure(msg))
+                return
+            }
+
+            completion(.failure("Hosted auth response did not contain a valid URL"))
+        }
+        task.resume()
+    }
+
     // MARK: - Hosted Authentication (ASWebAuthenticationSession)
 
     @objc(startHostedAuth:)
@@ -654,8 +784,7 @@ class EchoPlugin : CDVPlugin {
         self.commandDelegate!.run(inBackground: {
             let mode = command.argument(at: 0) as? String ?? "sign_in"
             let pk = self.inMemoryPublishableKey.isEmpty ? (self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_PUBLISHABLE_KEY) ?? "") : self.inMemoryPublishableKey
-            guard let fapiHost = self.getFrontendApiHost(publishableKey: pk),
-                  let portalHost = self.getAccountPortalHost(publishableKey: pk), !portalHost.isEmpty else {
+            guard let fapiHost = self.getFrontendApiHost(publishableKey: pk), !fapiHost.isEmpty else {
                 let response: [String: Any] = [
                     "status": "error",
                     "message": "Clerk publishable key is missing or invalid. Please call initializeClerk(publishableKey) first.",
@@ -666,11 +795,191 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
-            let path = (mode.lowercased() == "sign_up") ? "/sign-up" : "/sign-in"
-            guard var urlComponents = URLComponents(string: "https://\(portalHost)\(path)") else {
+            // 1. Generate cryptographic PKCE & state parameters
+            guard let randomBytes = self.generateRandomBytes(count: 32) else {
                 let response: [String: Any] = [
                     "status": "error",
-                    "message": "Invalid Account Portal URL for host: \(portalHost)",
+                    "message": "Failed to generate cryptographic random bytes for PKCE.",
+                    "errorCode": "crypto_error",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                return
+            }
+
+            let codeVerifier = randomBytes.map { String(format: "%02x", $0) }.joined()
+            guard let verifierData = codeVerifier.data(using: .utf8) else {
+                let response: [String: Any] = [
+                    "status": "error",
+                    "message": "Failed to encode PKCE code verifier.",
+                    "errorCode": "crypto_error",
+                    "platform": "ios"
+                ]
+                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                return
+            }
+            let codeChallenge = self.base64UrlEncode(data: self.sha256(data: verifierData))
+            let state = UUID().uuidString
+
+            self.activeHostedAuthState = state
+            self.activeHostedAuthVerifier = codeVerifier
+
+            let bundleId = Bundle.main.bundleIdentifier ?? "org.luvelo.dev.ClerkApp2"
+            let callbackScheme = bundleId
+            let redirectUrl = "\(bundleId)://callback"
+
+            // 2. Obtain Client JWT from Clerk FAPI
+            self.fetchClientToken(host: fapiHost, publishableKey: pk) { clientToken in
+                let tokenToUse = clientToken ?? "Bearer \(pk)"
+
+                // 3. Initiate Hosted Auth with Clerk FAPI to obtain signed Account Portal URL
+                self.requestHostedAuthUrl(host: fapiHost, clientToken: tokenToUse, redirectUrl: redirectUrl, codeChallenge: codeChallenge, state: state, mode: mode) { result in
+                    switch result {
+                    case .failure(let errorMsg):
+                        // If token expired/signed_out, retry once with fresh client token
+                        self.cachedClientToken = ""
+                        self.fetchClientToken(host: fapiHost, publishableKey: pk) { freshToken in
+                            guard let fresh = freshToken else {
+                                let response: [String: Any] = [
+                                    "status": "error",
+                                    "message": "Failed to initiate hosted auth: \(errorMsg)",
+                                    "errorCode": "hosted_auth_init_failed",
+                                    "platform": "ios"
+                                ]
+                                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                                return
+                            }
+
+                            self.requestHostedAuthUrl(host: fapiHost, clientToken: fresh, redirectUrl: redirectUrl, codeChallenge: codeChallenge, state: state, mode: mode) { retryResult in
+                                switch retryResult {
+                                case .failure(let retryError):
+                                    let response: [String: Any] = [
+                                        "status": "error",
+                                        "message": "Failed to initiate hosted auth: \(retryError)",
+                                        "errorCode": "hosted_auth_init_failed",
+                                        "platform": "ios"
+                                    ]
+                                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+
+                                case .success(let authUrlStr):
+                                    self.launchWebAuthSession(urlStr: authUrlStr, callbackScheme: callbackScheme, fapiHost: fapiHost, pk: pk, command: command)
+                                }
+                            }
+                        }
+
+                    case .success(let authUrlStr):
+                        self.launchWebAuthSession(urlStr: authUrlStr, callbackScheme: callbackScheme, fapiHost: fapiHost, pk: pk, command: command)
+                    }
+                }
+            }
+        })
+    }
+
+    private func launchWebAuthSession(urlStr: String, callbackScheme: String, fapiHost: String, pk: String, command: CDVInvokedUrlCommand) {
+        guard let authURL = URL(string: urlStr) else {
+            let response: [String: Any] = [
+                "status": "error",
+                "message": "Failed to parse hosted auth URL: \(urlStr)",
+                "errorCode": "invalid_url",
+                "platform": "ios"
+            ]
+            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+            return
+        }
+
+        DispatchQueue.main.async {
+            self.authSession = ASWebAuthenticationSession(url: authURL, callbackURLScheme: callbackScheme) { callbackURL, error in
+                self.authSession = nil
+                if let error = error {
+                    let nsError = error as NSError
+                    if nsError.domain == ASWebAuthenticationSessionErrorDomain && nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                        let response: [String: Any] = [
+                            "status": "cancelled",
+                            "message": "User cancelled authentication",
+                            "platform": "ios"
+                        ]
+                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                    } else {
+                        let response: [String: Any] = [
+                            "status": "error",
+                            "message": error.localizedDescription,
+                            "errorCode": "hosted_auth_failed",
+                            "platform": "ios"
+                        ]
+                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                    }
+                    return
+                }
+
+                guard let callbackURL = callbackURL else {
+                    let response: [String: Any] = [
+                        "status": "error",
+                        "message": "Authentication completed without callback URL",
+                        "errorCode": "no_callback_url",
+                        "platform": "ios"
+                    ]
+                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                    return
+                }
+
+                self.handleHostedAuthCallback(callbackURL: callbackURL, host: fapiHost, pk: pk, command: command)
+            }
+
+            if #available(iOS 13.0, *) {
+                self.authSession?.presentationContextProvider = self
+                self.authSession?.prefersEphemeralWebBrowserSession = false
+            }
+
+            self.authSession?.start()
+        }
+    }
+
+    private func handleHostedAuthCallback(callbackURL: URL, host: String, pk: String, command: CDVInvokedUrlCommand) {
+        self.commandDelegate!.run(inBackground: {
+            var callbackState = ""
+            var rotatingTokenNonce = ""
+            var createdSessionId = ""
+
+            if let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+               let queryItems = components.queryItems {
+                for item in queryItems {
+                    if item.name == "state" {
+                        callbackState = item.value ?? ""
+                    } else if item.name == "rotating_token_nonce" || item.name == "rotatingTokenNonce" {
+                        rotatingTokenNonce = item.value ?? ""
+                    } else if item.name == "created_session_id" || item.name == "createdSessionId" || item.name == "__clerk_created_session" || item.name == "session_id" {
+                        createdSessionId = item.value ?? ""
+                    } else if item.name == "__clerk_db_jwt" || item.name == "_clerk_db_jwt" {
+                        if let dbJwt = item.value, !dbJwt.isEmpty {
+                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY, value: dbJwt)
+                        }
+                    }
+                }
+            }
+
+            // Verify state parameter to prevent CSRF attacks
+            if let expectedState = self.activeHostedAuthState, !expectedState.isEmpty, !callbackState.isEmpty {
+                guard callbackState == expectedState else {
+                    let response: [String: Any] = [
+                        "status": "error",
+                        "message": "Hosted auth callback state mismatch. Possible CSRF attack detected.",
+                        "errorCode": "state_mismatch",
+                        "platform": "ios"
+                    ]
+                    self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
+                    return
+                }
+            }
+
+            let codeVerifier = self.activeHostedAuthVerifier ?? ""
+            self.activeHostedAuthState = nil
+            self.activeHostedAuthVerifier = nil
+
+            // 4. Redeem session via POST /v1/client (_method=GET)
+            guard let redeemUrl = URL(string: "https://\(host)/v1/client") else {
+                let response: [String: Any] = [
+                    "status": "error",
+                    "message": "Invalid client endpoint URL",
                     "errorCode": "invalid_url",
                     "platform": "ios"
                 ]
@@ -678,179 +987,100 @@ class EchoPlugin : CDVPlugin {
                 return
             }
 
-            let bundleId = Bundle.main.bundleIdentifier ?? "org.luvelo.dev.ClerkApp2"
-            let callbackScheme = bundleId
-            let redirectUrl = "\(bundleId)://callback"
+            var redeemReq = URLRequest(url: redeemUrl)
+            redeemReq.httpMethod = "POST"
+            redeemReq.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            redeemReq.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                redeemReq.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+            }
 
-            var queryItems = [
-                URLQueryItem(name: "redirect_url", value: redirectUrl),
-                URLQueryItem(name: "after_sign_in_url", value: redirectUrl),
-                URLQueryItem(name: "after_sign_up_url", value: redirectUrl),
-                URLQueryItem(name: "fallback_redirect_url", value: redirectUrl),
-                URLQueryItem(name: "sign_in_force_redirect_url", value: redirectUrl),
-                URLQueryItem(name: "sign_up_force_redirect_url", value: redirectUrl),
-                URLQueryItem(name: "_clerk_js_version", value: "5.0.0")
+            let redeemParams: [String: String] = [
+                "_method": "GET",
+                "rotating_token_nonce": rotatingTokenNonce,
+                "rotatingTokenNonce": rotatingTokenNonce,
+                "code_verifier": codeVerifier,
+                "codeVerifier": codeVerifier
             ]
-            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
-            }
-            urlComponents.queryItems = queryItems
 
-            guard let authURL = urlComponents.url else {
-                let response: [String: Any] = [
-                    "status": "error",
-                    "message": "Failed to generate authentication URL",
-                    "errorCode": "url_generation_failed",
-                    "platform": "ios"
-                ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
-                return
-            }
+            let redeemBody = redeemParams.map { "\(self.urlEncode($0.key))=\(self.urlEncode($0.value))" }.joined(separator: "&")
+            redeemReq.httpBody = redeemBody.data(using: .utf8)
 
-            DispatchQueue.main.async {
-                self.authSession = ASWebAuthenticationSession(url: authURL, callbackURLScheme: callbackScheme) { callbackURL, error in
-                    self.authSession = nil
-                    if let error = error {
-                        let nsError = error as NSError
-                        if nsError.domain == ASWebAuthenticationSessionErrorDomain && nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
-                            let response: [String: Any] = [
-                                "status": "cancelled",
-                                "message": "User cancelled authentication",
-                                "platform": "ios"
-                            ]
-                            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
-                        } else {
-                            let response: [String: Any] = [
-                                "status": "error",
-                                "message": error.localizedDescription,
-                                "errorCode": "hosted_auth_failed",
-                                "platform": "ios"
-                            ]
-                            self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
-                        }
-                        return
-                    }
-
-                    guard let callbackURL = callbackURL else {
-                        let response: [String: Any] = [
-                            "status": "error",
-                            "message": "Authentication completed without callback URL",
-                            "errorCode": "no_callback_url",
-                            "platform": "ios"
-                        ]
-                        self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: response), callbackId: command.callbackId)
-                        return
-                    }
-
-                    self.handleHostedAuthCallback(callbackURL: callbackURL, host: fapiHost, pk: pk, command: command)
-                }
-
-                if #available(iOS 13.0, *) {
-                    self.authSession?.presentationContextProvider = self
-                    self.authSession?.prefersEphemeralWebBrowserSession = true
-                }
-
-                self.authSession?.start()
-            }
-        })
-    }
-
-    private func handleHostedAuthCallback(callbackURL: URL, host: String, pk: String, command: CDVInvokedUrlCommand) {
-        self.commandDelegate!.run(inBackground: {
-            var createdSessionId = ""
-
-            if let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false) {
-                if let queryItems = components.queryItems {
-                    for item in queryItems {
-                        if item.name == "__clerk_created_session" || item.name == "created_session_id" || item.name == "session_id" {
-                            createdSessionId = item.value ?? ""
-                        }
-                        if (item.name == "__clerk_db_jwt" || item.name == "_clerk_db_jwt"), let dbJwt = item.value, !dbJwt.isEmpty {
-                            self.saveToKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY, value: dbJwt)
-                        }
-                    }
-                }
-            }
-
-            if !createdSessionId.isEmpty {
-                self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: createdSessionId)
-            }
-
-            // Live fetch user session from /v1/client
-            guard var urlComponents = URLComponents(string: "https://\(host)/v1/client") else {
-                let response: [String: Any] = [
-                    "status": "success",
-                    "message": "Hosted authentication successful",
-                    "sessionId": createdSessionId,
-                    "platform": "ios"
-                ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
-                return
-            }
-
-            var queryItems = [URLQueryItem(name: "_clerk_js_version", value: "5.0.0")]
-            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                queryItems.append(URLQueryItem(name: "_clerk_db_jwt", value: dbJwt))
-            }
-            urlComponents.queryItems = queryItems
-
-            guard let url = urlComponents.url else {
-                let response: [String: Any] = [
-                    "status": "success",
-                    "message": "Hosted authentication successful",
-                    "sessionId": createdSessionId,
-                    "platform": "ios"
-                ]
-                self.commandDelegate!.send(CDVPluginResult(status: CDVCommandStatus_OK, messageAs: response), callbackId: command.callbackId)
-                return
-            }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            if !pk.isEmpty {
-                request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
-            }
-            if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
-                request.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
-            }
-
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            let task = URLSession.shared.dataTask(with: redeemReq) { data, response, error in
                 self.extractAndSaveDevBrowserJwt(response: response)
+
+                var jwtToken = ""
+                if let httpResp = response as? HTTPURLResponse {
+                    let authHeader = httpResp.allHeaderFields["authorization"] as? String
+                        ?? httpResp.allHeaderFields["Authorization"] as? String
+                    if let auth = authHeader, !auth.isEmpty {
+                        jwtToken = auth
+                        self.cachedClientToken = auth
+                    }
+                }
 
                 var userId = ""
                 var firstName = ""
                 var lastName = ""
                 var email = ""
-                var jwtToken = ""
 
-                if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let clientObj = json["client"] as? [String: Any] {
+                if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let clientObj = json["client"] as? [String: Any] ?? json["response"] as? [String: Any]
 
-                    if createdSessionId.isEmpty, let activeSessId = clientObj["active_session_id"] as? String {
-                        createdSessionId = activeSessId
-                    }
-
-                    if let sessionsList = clientObj["sessions"] as? [[String: Any]] {
-                        let activeSess = sessionsList.first(where: { ($0["id"] as? String) == createdSessionId }) ?? sessionsList.first
-                        if let sess = activeSess {
-                            if createdSessionId.isEmpty, let sId = sess["id"] as? String {
-                                createdSessionId = sId
-                            }
-                            if let lastActiveToken = sess["last_active_token"] as? [String: Any], let jwt = lastActiveToken["jwt"] as? String {
-                                jwtToken = jwt
-                            }
-                            if let userObj = sess["user"] as? [String: Any] {
-                                userId = userObj["id"] as? String ?? ""
-                                firstName = userObj["first_name"] as? String ?? ""
-                                lastName = userObj["last_name"] as? String ?? ""
-                                if let emailList = userObj["email_addresses"] as? [[String: Any]], let firstEmail = emailList.first {
-                                    email = firstEmail["email_address"] as? String ?? ""
+                    if let client = clientObj {
+                        if createdSessionId.isEmpty, let activeSessId = client["active_session_id"] as? String {
+                            createdSessionId = activeSessId
+                        }
+                        if let sessionsList = client["sessions"] as? [[String: Any]] {
+                            let activeSess = sessionsList.first(where: { ($0["id"] as? String) == createdSessionId }) ?? sessionsList.first
+                            if let sess = activeSess {
+                                if createdSessionId.isEmpty, let sId = sess["id"] as? String {
+                                    createdSessionId = sId
+                                }
+                                if let lastActiveToken = sess["last_active_token"] as? [String: Any], let jwt = lastActiveToken["jwt"] as? String, !jwt.isEmpty {
+                                    jwtToken = jwt
+                                }
+                                if let userObj = sess["user"] as? [String: Any] {
+                                    userId = userObj["id"] as? String ?? ""
+                                    firstName = userObj["first_name"] as? String ?? ""
+                                    lastName = userObj["last_name"] as? String ?? ""
+                                    if let emailList = userObj["email_addresses"] as? [[String: Any]], let firstEmail = emailList.first {
+                                        email = firstEmail["email_address"] as? String ?? ""
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
+                // Fallback: If sessions list in client was empty, attempt one best-effort fetch via GET /v1/client
+                if userId.isEmpty && !createdSessionId.isEmpty {
+                    var fetchReq = URLRequest(url: URL(string: "https://\(host)/v1/client")!)
+                    fetchReq.httpMethod = "GET"
+                    fetchReq.setValue(!jwtToken.isEmpty ? jwtToken : "Bearer \(pk)", forHTTPHeaderField: "Authorization")
+                    if let dbJwt = self.loadFromKeychain(key: EchoPlugin.KEYCHAIN_DEV_BROWSER_JWT_KEY), !dbJwt.isEmpty {
+                        fetchReq.setValue(dbJwt, forHTTPHeaderField: "Clerk-Db-Jwt")
+                    }
+                    let sem = DispatchSemaphore(value: 0)
+                    URLSession.shared.dataTask(with: fetchReq) { fData, _, _ in
+                        if let fData = fData, let fJson = try? JSONSerialization.jsonObject(with: fData) as? [String: Any],
+                           let fClient = fJson["client"] as? [String: Any] ?? fJson["response"] as? [String: Any],
+                           let fSessions = fClient["sessions"] as? [[String: Any]],
+                           let fActive = fSessions.first(where: { ($0["id"] as? String) == createdSessionId }) ?? fSessions.first,
+                           let fUser = fActive["user"] as? [String: Any] {
+                            userId = fUser["id"] as? String ?? ""
+                            firstName = fUser["first_name"] as? String ?? ""
+                            lastName = fUser["last_name"] as? String ?? ""
+                            if let fEmails = fUser["email_addresses"] as? [[String: Any]], let fEmail = fEmails.first {
+                                email = fEmail["email_address"] as? String ?? ""
+                            }
+                        }
+                        sem.signal()
+                    }.resume()
+                    _ = sem.wait(timeout: .now() + 3.0)
+                }
+
+                // Persist session to Shared Keychain
                 if !createdSessionId.isEmpty {
                     self.saveToKeychain(key: EchoPlugin.KEYCHAIN_SESSION_ID_KEY, value: createdSessionId)
                 }

@@ -2,7 +2,7 @@
 <plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android"
         id="cordova-plugin-echo"
-        version="1.0.13">
+        version="1.0.14">
 
     <name>EchoPlugin</name>
     <description>Cordova Android Echo Plugin written in Kotlin</description>
@@ -56,6 +56,22 @@
             </feature>
             <preference name="SwiftVersion" value="5.0" />
             <preference name="UseSwiftLanguageVersion" value="5.0" />
+        </config-file>
+
+        <!-- Custom URL Scheme for Clerk Mobile SSO & Hosted Auth Redirection -->
+        <config-file target="*-Info.plist" parent="CFBundleURLTypes">
+            <array>
+                <dict>
+                    <key>CFBundleTypeRole</key>
+                    <string>Editor</string>
+                    <key>CFBundleURLName</key>
+                    <string>org.luvelo.dev.ClerkApp2</string>
+                    <key>CFBundleURLSchemes</key>
+                    <array>
+                        <string>org.luvelo.dev.ClerkApp2</string>
+                    </array>
+                </dict>
+            </array>
         </config-file>
 
         <!-- Keychain Sharing Entitlements for OutSystems MABS Cloud Builds -->
