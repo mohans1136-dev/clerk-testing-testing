@@ -747,7 +747,7 @@ class EchoPlugin : CDVPlugin {
 
                 if #available(iOS 13.0, *) {
                     self.authSession?.presentationContextProvider = self
-                    self.authSession?.prefersEphemeralWebBrowserSession = false
+                    self.authSession?.prefersEphemeralWebBrowserSession = true
                 }
 
                 self.authSession?.start()
